@@ -6,9 +6,9 @@ const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const ADVANCED_SETTINGS_OPEN_KEY = "psd-export-pipeline-advanced-open";
 const RELEASE_INFO = {
-  version: "1.1.81",
-  build: "v71",
-  stamp: "2026-04-24-01",
+  version: "1.1.82",
+  build: "v72",
+  stamp: "2026-04-24-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -130,7 +130,7 @@ function getSettingsGridMarkup() {
       </label>
       <label class="pe-field">
         <span>Prefab 目標平台</span>
-        <button id="prefabTargetSelect" class="pe-select-btn" type="button" data-kind="select">-</button>
+        ${buildNativeSelectMarkup("prefabTargetSelect", "pe-native-select")}
       </label>
       <label class="pe-field pe-field--wide">
         <span>檔名前綴</span>
@@ -176,6 +176,11 @@ function getSettingsGridMarkup() {
       </div>
     </details>
   `;
+}
+
+function buildNativeSelectMarkup(id, className) {
+  const options = SELECT_OPTIONS[id] || [];
+  return `<select id="${id}" class="${className}">${options.map((item) => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join("")}</select>`;
 }
 
 function forceShowSettingsGrid(grid) {
@@ -248,7 +253,7 @@ function forceShowSettingsGrid(grid) {
     }
   });
 
-  grid.querySelectorAll("button, input, textarea").forEach((control) => {
+  grid.querySelectorAll("button, input, textarea, select").forEach((control) => {
     if (!control || !control.style) {
       return;
     }
@@ -309,7 +314,7 @@ function forceShowSettingsGrid(grid) {
         }
       });
 
-      grid.querySelectorAll("button, input, textarea").forEach((control) => {
+      grid.querySelectorAll("button, input, textarea, select").forEach((control) => {
         if (!control || !control.style) {
           return;
         }
@@ -476,6 +481,16 @@ function bindSettingControl(element) {
   }
 
   const tagName = (element.tagName || "").toUpperCase();
+  if (tagName === "SELECT") {
+    element.addEventListener("change", () => {
+      if (element.id === "prefabTargetSelect") {
+        applyEnginePresetForTarget(getControlValue(element));
+      }
+      queueSettingsRefresh();
+    });
+    return;
+  }
+
   if (kind === "text" || element.isContentEditable || tagName === "INPUT" || tagName === "TEXTAREA") {
     element.addEventListener("input", queueSettingsRefresh);
     element.addEventListener("blur", queueSettingsRefresh);

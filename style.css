@@ -147,11 +147,13 @@ h2 {
 
 .pe-field > .pe-select-btn,
 .pe-field > .pe-editable,
-.pe-field > .pe-native-input {
+.pe-field > .pe-native-input,
+.pe-field > .pe-native-select {
   width: 100%;
 }
 
-.pe-native-input {
+.pe-native-input,
+.pe-native-select {
   width: 100%;
   min-height: 30px;
   padding: 6px 10px;
@@ -165,7 +167,13 @@ h2 {
   user-select: text;
 }
 
-.pe-native-input:focus {
+.pe-native-select {
+  height: 32px;
+  cursor: pointer;
+}
+
+.pe-native-input:focus,
+.pe-native-select:focus {
   outline: none;
   border-color: #78adff;
 }
