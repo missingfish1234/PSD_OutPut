@@ -1,0 +1,16 @@
+# Generated packages and installers
+launcher/dist/
+
+# Local inspection/export scratch folders
+_inspect_*/
+_inspect_unity_*/
+
+# Runtime and OS noise
+node_modules/
+.DS_Store
+Thumbs.db
+*.log
+
+# Local editor state
+.vs/
+.vscode/

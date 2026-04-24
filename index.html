@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PSD Export Pipeline</title>
+  <script defer src="index.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="pe-panel">
+    <section class="pe-card">
+      <h1 class="pe-title">PSD Export Pipeline</h1>
+      <p class="pe-subtext">Photoshop PSD 圖層輸出工具，支援 PNG、metadata、Unity、Cocos 與 Spine。</p>
+      <p class="pe-build-tag">Build 1.1.81 / v71 / stamp 2026-04-24-01</p>
+    </section>
+
+    <section class="pe-card">
+      <div class="pe-section-head">
+        <h2>輸出資料夾</h2>
+        <button id="chooseFolderBtn" class="pe-btn pe-btn-secondary" type="button">選擇資料夾</button>
+      </div>
+      <p id="folderState" class="pe-hint">尚未選擇輸出資料夾</p>
+      <p id="folderPath" class="pe-path">請先選擇匯出資料夾。</p>
+    </section>
+
+    <section class="pe-card">
+      <h2>匯出設定</h2>
+      <div class="pe-setting-grid"></div>
+    </section>
+
+    <section class="pe-card">
+      <div class="pe-section-head">
+        <h2>PSD 掃描</h2>
+        <div class="pe-actions">
+          <button id="refreshBtn" class="pe-btn pe-btn-secondary" type="button">重新掃描 PSD</button>
+          <button id="exportBtn" class="pe-btn pe-btn-primary" type="button">開始匯出</button>
+        </div>
+      </div>
+      <div class="pe-stats">
+        <div class="pe-stat"><span>文件</span><strong id="docName">尚未掃描</strong></div>
+        <div class="pe-stat"><span>尺寸</span><strong id="docSize">-</strong></div>
+        <div class="pe-stat"><span>項目數</span><strong id="assetCount">0</strong></div>
+        <div class="pe-stat"><span>檔名預覽</span><strong id="namePreview">-</strong></div>
+      </div>
+    </section>
+
+    <section class="pe-card">
+      <h2>輸出預覽</h2>
+      <div id="previewList" class="pe-preview-list"></div>
+    </section>
+
+    <section class="pe-card">
+      <h2>狀態</h2>
+      <pre id="statusBox" class="pe-status">面板載入中...</pre>
+    </section>
+  </main>
+</body>
+</html>
