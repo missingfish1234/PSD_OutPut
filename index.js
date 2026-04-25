@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.88",
-  build: "v78",
-  stamp: "2026-04-25-06",
+  version: "1.1.89",
+  build: "v79",
+  stamp: "2026-04-25-07",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -903,6 +903,9 @@ function collectLayers(doc, settings) {
     if (isBackgroundLayer(layer)) {
       return;
     }
+    if (isAdjustmentLayer(layer)) {
+      return;
+    }
     result.push(layer);
   });
 
@@ -926,6 +929,9 @@ function walkLeafLayers(layer, result, settings, selectedIds, ancestorSelected, 
   if (isBackgroundLayer(layer)) {
     return;
   }
+  if (isAdjustmentLayer(layer)) {
+    return;
+  }
 
   if (keywords.length && !branchKeywordMatched) {
     return;
@@ -944,6 +950,9 @@ function walkRecursiveExportLayers(layer, result, settings, selectedIds, ancesto
   }
 
   if (isBackgroundLayer(layer)) {
+    return;
+  }
+  if (isAdjustmentLayer(layer)) {
     return;
   }
 
@@ -1384,7 +1393,7 @@ function describeLayerKind(layer) {
     return "text";
   }
 
-  return String(layer.kind || "layer").toLowerCase();
+  return getLayerKindName(layer) || "layer";
 }
 
 function isGroupLayer(layer) {
@@ -1393,6 +1402,134 @@ function isGroupLayer(layer) {
 
 function isBackgroundLayer(layer) {
   return Boolean(layer.isBackgroundLayer);
+}
+
+function isAdjustmentLayer(layer) {
+  if (!layer || isGroupLayer(layer) || isTextLayer(layer)) {
+    return false;
+  }
+
+  const kind = getLayerKindName(layer);
+  if (ADJUSTMENT_LAYER_KIND_NAMES.has(kind)) {
+    return true;
+  }
+
+  if (layer.adjustment || layer.isAdjustmentLayer || layer.adjustmentType) {
+    return true;
+  }
+
+  const name = normalizeLayerName(layer.name);
+  return ADJUSTMENT_LAYER_NAME_HINTS.some((hint) => name.includes(normalizeLayerName(hint)));
+}
+
+const ADJUSTMENT_LAYER_KIND_NAMES = new Set([
+  "adjustment",
+  "adjustmentlayer",
+  "blackandwhite",
+  "brightnesscontrast",
+  "channelmixer",
+  "colorbalance",
+  "colorlookup",
+  "curves",
+  "exposure",
+  "gradientmap",
+  "huesaturation",
+  "invert",
+  "levels",
+  "photoFilter",
+  "photofilter",
+  "posterize",
+  "selectivecolor",
+  "threshold",
+  "vibrance",
+]);
+
+const ADJUSTMENT_LAYER_NAME_HINTS = [
+  "漸層對應",
+  "渐变映射",
+  "gradient_map",
+  "gradientmap",
+  "gradient map",
+  "色階",
+  "色阶",
+  "levels",
+  "曲線",
+  "曲线",
+  "curves",
+  "色相",
+  "飽和度",
+  "饱和度",
+  "hue_saturation",
+  "huesaturation",
+  "hue saturation",
+  "亮度_對比",
+  "亮度_对比",
+  "brightness_contrast",
+  "brightnesscontrast",
+  "brightness contrast",
+  "色彩平衡",
+  "color_balance",
+  "colorbalance",
+  "color balance",
+  "色彩查詢",
+  "颜色查找",
+  "color_lookup",
+  "colorlookup",
+  "color lookup",
+  "黑白",
+  "black_white",
+  "blackandwhite",
+  "black white",
+  "曝光",
+  "exposure",
+  "反相",
+  "invert",
+  "臨界值",
+  "阈值",
+  "threshold",
+  "自然飽和度",
+  "自然饱和度",
+  "vibrance",
+  "相片濾鏡",
+  "照片滤镜",
+  "photo_filter",
+  "photofilter",
+  "photo filter",
+  "色調分離",
+  "色调分离",
+  "posterize",
+  "可選顏色",
+  "可选颜色",
+  "selective_color",
+  "selectivecolor",
+  "selective color",
+  "channel_mixer",
+  "channelmixer",
+  "channel mixer",
+];
+
+function getLayerKindName(layer) {
+  const rawKind = layer && typeof layer.kind !== "undefined" && layer.kind !== null ? layer.kind : "";
+  const directName = normalizeLayerKindName(rawKind);
+  if (directName && !/^\d+$/.test(directName)) {
+    return directName;
+  }
+
+  const layerKinds = constants && constants.LayerKind ? constants.LayerKind : null;
+  if (!layerKinds || typeof layerKinds !== "object") {
+    return directName || "";
+  }
+
+  const match = Object.keys(layerKinds).find((key) => layerKinds[key] === rawKind);
+  return normalizeLayerKindName(match || directName);
+}
+
+function normalizeLayerKindName(value) {
+  return String(value || "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+}
+
+function normalizeLayerName(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, "_");
 }
 
 function isTextLayer(layer) {

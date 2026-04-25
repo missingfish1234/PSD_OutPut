@@ -2,7 +2,7 @@
   "manifestVersion": 4,
   "id": "com.fishwang.psdexportpipeline.v7",
   "name": "PSD Export Pipeline",
-  "version": "1.1.88",
+  "version": "1.1.89",
   "main": "index.html",
   "host": {
     "app": "PS",
