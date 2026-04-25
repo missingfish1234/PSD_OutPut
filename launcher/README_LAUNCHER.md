@@ -89,6 +89,32 @@ Send both files to teammates in the same folder. They run the `Install_*.cmd` he
 
 If Adobe rejects the generated `.ccx`, use UXP Developer Tools > Actions > Package on the plugin folder. That creates Adobe's packaged CCX flow and is the supported non-UDT install path.
 
+## Build One-Click Manager Panel
+
+For teammates, the simplest package is the manager panel:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_manager_package.ps1
+```
+
+Output example:
+
+```text
+launcher\dist\PSDExportManager_1.1.82.zip
+```
+
+Send this zip to teammates. They unzip it and run `PSDExportManager.exe`.
+
+Panel actions:
+
+1. Install Current Version
+2. Check Updates
+3. Update and Install
+4. Open Photoshop
+5. Open updater folder/log location
+
+The panel uses the bundled `.ccx` for first install, then uses GitHub + CCX for updates.
+
 ## Optional Git updater
 
 Use this when teammates should choose when to update from Git:
