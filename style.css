@@ -109,15 +109,30 @@ h2 {
   background: #2d2d2d;
 }
 
-.pe-advanced-details summary {
+.pe-advanced-summary {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
   cursor: pointer;
   font-size: 12px;
+  font-weight: 700;
+  text-align: left;
   color: #cfdfff;
   user-select: none;
 }
 
-.pe-advanced-details[open] summary {
+.pe-advanced-summary:hover,
+.pe-advanced-summary:focus {
+  color: #ffffff;
+}
+
+.pe-advanced-details[data-open="1"] .pe-advanced-summary {
   margin-bottom: 8px;
+}
+
+.pe-advanced-panel[hidden] {
+  display: none !important;
 }
 
 .pe-toggle-grid-basic {
