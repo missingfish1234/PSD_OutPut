@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.87",
-  build: "v77",
-  stamp: "2026-04-25-05",
+  version: "1.1.88",
+  build: "v78",
+  stamp: "2026-04-25-06",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -768,7 +768,7 @@ function buildDocumentSnapshot(settings) {
     .map((layer) => makeCandidate(doc, layer, settings))
     .filter(Boolean);
   const orderedCandidates = orderAssetsForChannel(unorderedCandidates, settings, settings.mode === "spine" ? "spine" : "platform");
-  const candidates = assignSequentialExportNames(orderedCandidates);
+  const candidates = assignUniqueExportNames(orderedCandidates);
 
   return {
     docInfo: {
@@ -1145,15 +1145,19 @@ function buildTransparentFallbackBounds(doc, seedBounds) {
   };
 }
 
-function assignSequentialExportNames(candidates) {
+function assignUniqueExportNames(candidates) {
   const counters = new Map();
   return (candidates || []).map((candidate) => {
     const key = String((candidate && candidate.baseExportName) || "Layer").trim() || "Layer";
-    const next = (counters.get(key) || 0) + 1;
-    counters.set(key, next);
+    const registryKey = key.toLowerCase();
+    const next = (counters.get(registryKey) || 0) + 1;
+    counters.set(registryKey, next);
+    const exportName = next === 1 ? key : `${key}_${String(next).padStart(3, "0")}`;
     return {
       ...candidate,
-      exportName: `${key}_${String(next).padStart(3, "0")}`,
+      exportName,
+      exportNameAdjusted: exportName !== key,
+      exportNameCollisionIndex: next,
     };
   });
 }
@@ -3878,6 +3882,8 @@ function makeMetadataRecord(item, exportDebug) {
     id: item.id,
     name: item.exportName,
     baseExportName: item.baseExportName,
+    exportNameAdjusted: Boolean(item.exportNameAdjusted),
+    exportNameCollisionIndex: item.exportNameCollisionIndex || 1,
     sourceName: item.sourceName,
     sourcePath: item.sourcePath,
     sanitizedSourcePath: item.sanitizedSourcePath,
@@ -4055,7 +4061,10 @@ async function buildExportReportPayload(context) {
     ));
   }
 
-  const duplicateBaseNames = [];
+  const duplicateBaseNames = summarizeDuplicateItems(context.sourceItems, (item) => item.baseExportName, (item) => ({
+    exportName: item.exportName,
+    sourcePath: item.sourcePath,
+  }));
   const duplicateSourceNames = summarizeDuplicateItems(context.sourceItems, (item) => item.sourceName, (item) => ({
     exportName: item.exportName,
     sourcePath: item.sourcePath,
@@ -4066,11 +4075,19 @@ async function buildExportReportPayload(context) {
     : [];
   const probableTextLayerFailures = transparentAssets.filter((item) => String(item.kind || "").toLowerCase() === "text");
   const compositeRiskAssets = (context.exportedAssets || []).filter((asset) => isCompositeRiskAsset(asset));
-  const renameWarnings = [];
+  const renameWarnings = (context.sourceItems || [])
+    .filter((item) => item && item.exportNameAdjusted)
+    .map((item) => ({
+      exportName: item.exportName,
+      message: `${item.baseExportName}.png renamed to ${item.exportName}.png because another visible layer uses the same export name`,
+      sourcePath: item.sourcePath,
+    }));
   const spineRuleTests = runSpineOrderRuleSelfTests();
 
   const warnings = [
     ...pathWarnings.map((item) => `[path] ${item.message}`),
+    ...renameWarnings.map((item) => `[rename] ${item.message}`),
+    ...duplicateBaseNames.map((item) => `[duplicate-export-name] ${item.key} x${item.count}`),
     ...duplicateSourceNames.map((item) => `[duplicate-source] ${item.key} x${item.count}`),
     ...transparentAssets.map((item) => `[transparent] ${item.exportName}.png exported with no visible pixels (${item.kind})`),
     ...probableTextLayerFailures.map((item) => `[text-render] ${item.exportName}.png is a text layer export with no visible pixels; check missing/substituted fonts or rasterize before export`),
