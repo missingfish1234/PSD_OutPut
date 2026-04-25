@@ -135,6 +135,10 @@ h2 {
   display: none !important;
 }
 
+.pe-advanced-panel {
+  display: block;
+}
+
 .pe-toggle-grid-basic {
   margin-bottom: 2px;
 }

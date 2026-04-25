@@ -6,9 +6,9 @@ const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const ADVANCED_SETTINGS_OPEN_KEY = "psd-export-pipeline-advanced-open";
 const RELEASE_INFO = {
-  version: "1.1.83",
-  build: "v73",
-  stamp: "2026-04-25-01",
+  version: "1.1.84",
+  build: "v74",
+  stamp: "2026-04-25-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -101,17 +101,13 @@ function init() {
 }
 
 function ensureSettingsUi() {
-  const settingsSection = Array.from(document.querySelectorAll("section.pe-card")).find((section) => {
-    const heading = section.querySelector("h2");
-    return heading && heading.textContent && heading.textContent.includes("匯出設定");
-  });
-
-  if (!settingsSection) {
-    throw new Error("找不到匯出設定區塊，無法初始化設定欄位。");
-  }
-
-  let grid = settingsSection.querySelector(".pe-setting-grid");
+  let grid = document.querySelector(".pe-setting-grid");
   if (!grid) {
+    const settingsSection = document.getElementById("settingsCard") || document.querySelector("section.pe-card");
+    if (!settingsSection) {
+      throw new Error("找不到設定區塊，無法初始化設定欄位。");
+    }
+
     grid = document.createElement("div");
     grid.className = "pe-setting-grid";
     settingsSection.appendChild(grid);
@@ -147,7 +143,7 @@ function getSettingsGridMarkup() {
       <button id="advancedSettingsToggle" class="pe-advanced-summary" type="button" aria-expanded="false">
         進階選項（Spine / 關鍵字 / 掃描細節）
       </button>
-      <div id="advancedSettingsPanel" class="pe-advanced-panel" hidden>
+      <div id="advancedSettingsPanel" class="pe-advanced-panel" style="display:none;">
       <div class="pe-advanced-grid">
         <label class="pe-field">
           <span>圖層順序</span>
@@ -455,17 +451,17 @@ function bindAdvancedSettingsToggle() {
   ui.advancedSettingsToggle.addEventListener("click", (event) => {
     event.preventDefault();
     event.stopPropagation();
-    const nextOpen = ui.advancedSettingsDetails.dataset.open !== "1";
+    const nextOpen = ui.advancedSettingsDetails.getAttribute("data-open") !== "1";
     setAdvancedSettingsOpen(nextOpen, true);
   });
 }
 
 function setAdvancedSettingsOpen(isOpen, shouldPersist) {
   const openValue = isOpen ? "1" : "0";
-  ui.advancedSettingsDetails.dataset.open = openValue;
+  ui.advancedSettingsDetails.setAttribute("data-open", openValue);
   ui.advancedSettingsToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
   ui.advancedSettingsToggle.textContent = `${isOpen ? "收合" : "展開"}進階選項（Spine / 關鍵字 / 掃描細節）`;
-  ui.advancedSettingsPanel.hidden = !isOpen;
+  ui.advancedSettingsPanel.style.display = isOpen ? "block" : "none";
 
   if (shouldPersist) {
     localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, openValue);
