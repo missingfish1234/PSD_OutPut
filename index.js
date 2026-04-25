@@ -6,9 +6,9 @@ const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const ADVANCED_SETTINGS_OPEN_KEY = "psd-export-pipeline-advanced-open";
 const RELEASE_INFO = {
-  version: "1.1.84",
-  build: "v74",
-  stamp: "2026-04-25-02",
+  version: "1.1.85",
+  build: "v75",
+  stamp: "2026-04-25-03",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -143,7 +143,7 @@ function getSettingsGridMarkup() {
       <button id="advancedSettingsToggle" class="pe-advanced-summary" type="button" aria-expanded="false">
         進階選項（Spine / 關鍵字 / 掃描細節）
       </button>
-      <div id="advancedSettingsPanel" class="pe-advanced-panel" style="display:none;">
+      <div id="advancedSettingsPanel" class="pe-advanced-panel">
       <div class="pe-advanced-grid">
         <label class="pe-field">
           <span>圖層順序</span>
@@ -190,7 +190,7 @@ function forceShowSettingsGrid(grid) {
 
   applyImportantStyles(grid, {
     display: "block",
-    "margin-top": "8px",
+    "margin-top": "5px",
     visibility: "visible",
     opacity: "1",
     "min-height": "0",
@@ -212,7 +212,7 @@ function forceShowSettingsGrid(grid) {
     applyImportantStyles(child, (isToggleGrid || isGridBlock) ? {
       display: "grid",
       "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-      gap: "8px",
+      gap: "5px",
       visibility: "visible",
       opacity: "1",
       "min-height": "24px",
@@ -220,7 +220,7 @@ function forceShowSettingsGrid(grid) {
       "max-height": "none",
       overflow: "visible",
       position: "static",
-      margin: "0 0 8px 0",
+      margin: "0 0 5px 0",
     } : {
       display: "block",
       visibility: "visible",
@@ -232,13 +232,13 @@ function forceShowSettingsGrid(grid) {
       position: "static",
       float: "none",
       clear: "both",
-      margin: "0 0 8px 0",
+      margin: "0 0 5px 0",
       transform: "none",
     });
 
     if (child.classList && child.classList.contains("pe-field")) {
       applyImportantStyles(child, {
-        "min-height": "58px",
+        "min-height": "48px",
         padding: "0",
       });
       const title = child.querySelector("span");
@@ -262,10 +262,10 @@ function forceShowSettingsGrid(grid) {
       display: "block",
       visibility: "visible",
       opacity: "1",
-      "min-height": "32px",
-      height: isToggle ? "auto" : "32px",
+      "min-height": "28px",
+      height: isToggle ? "auto" : "28px",
       "max-height": "none",
-      padding: "6px 10px",
+      padding: "4px 8px",
       border: "1px solid #5d5d5d",
       "border-radius": "6px",
       "background-color": "#2f2f2f",
@@ -291,14 +291,14 @@ function forceShowSettingsGrid(grid) {
           applyImportantStyles(child, {
             display: "grid",
             "grid-template-columns": "repeat(2, minmax(0, 1fr))",
-            gap: "8px",
+            gap: "5px",
             visibility: "visible",
             opacity: "1",
             "min-height": "24px",
             height: "auto",
             "max-height": "none",
             position: "static",
-            margin: "0 0 8px 0",
+            margin: "0 0 5px 0",
           });
         } else {
           applyImportantStyles(child, {
@@ -309,7 +309,7 @@ function forceShowSettingsGrid(grid) {
             height: "auto",
             "max-height": "none",
             position: "static",
-            margin: "0 0 8px 0",
+            margin: "0 0 5px 0",
           });
         }
       });
@@ -323,8 +323,8 @@ function forceShowSettingsGrid(grid) {
           display: "block",
           visibility: "visible",
           opacity: "1",
-          "min-height": "32px",
-          height: isToggle ? "auto" : "32px",
+          "min-height": "28px",
+          height: isToggle ? "auto" : "28px",
           "max-height": "none",
           "font-size": "13px",
           position: "static",
@@ -458,10 +458,12 @@ function bindAdvancedSettingsToggle() {
 
 function setAdvancedSettingsOpen(isOpen, shouldPersist) {
   const openValue = isOpen ? "1" : "0";
+  const baseClassName = "pe-advanced-details";
   ui.advancedSettingsDetails.setAttribute("data-open", openValue);
+  ui.advancedSettingsDetails.setAttribute("class", isOpen ? `${baseClassName} is-open` : baseClassName);
+  ui.advancedSettingsPanel.setAttribute("class", isOpen ? "pe-advanced-panel is-open" : "pe-advanced-panel");
   ui.advancedSettingsToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
   ui.advancedSettingsToggle.textContent = `${isOpen ? "收合" : "展開"}進階選項（Spine / 關鍵字 / 掃描細節）`;
-  ui.advancedSettingsPanel.style.display = isOpen ? "block" : "none";
 
   if (shouldPersist) {
     localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, openValue);

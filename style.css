@@ -18,14 +18,14 @@ body {
   width: 100%;
   min-height: 100%;
   margin: 0;
-  padding: 6px;
+  padding: 5px;
   display: block;
 }
 
 .pe-card {
   min-width: 0;
-  margin-bottom: 6px;
-  padding: 8px;
+  margin-bottom: 5px;
+  padding: 6px;
   border: 1px solid #3f3f3f;
   border-radius: 8px;
   background: #333;
@@ -54,13 +54,13 @@ h2 {
 .pe-subtext,
 .pe-hint,
 .pe-path {
-  margin-top: 8px;
-  line-height: 1.35;
+  margin-top: 5px;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
 .pe-build-tag {
-  margin-top: 6px;
+  margin-top: 5px;
   font-size: 11px;
   color: #a8c7ff;
 }
@@ -80,21 +80,21 @@ h2 {
   flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: 5px;
 }
 
 .pe-setting-grid {
-  margin-top: 8px;
+  margin-top: 5px;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
+  gap: 5px;
 }
 
 .pe-basic-grid,
 .pe-advanced-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 5px;
 }
 
 .pe-field--wide {
@@ -105,7 +105,7 @@ h2 {
   margin-top: 2px;
   border: 1px solid #4b4b4b;
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 5px;
   background: #2d2d2d;
 }
 
@@ -128,15 +128,17 @@ h2 {
 }
 
 .pe-advanced-details[data-open="1"] .pe-advanced-summary {
-  margin-bottom: 8px;
-}
-
-.pe-advanced-panel[hidden] {
-  display: none !important;
+  margin-bottom: 5px;
 }
 
 .pe-advanced-panel {
-  display: block;
+  display: none !important;
+}
+
+.pe-advanced-details.is-open .pe-advanced-panel,
+.pe-advanced-details[data-open="1"] .pe-advanced-panel,
+.pe-advanced-panel.is-open {
+  display: block !important;
 }
 
 .pe-toggle-grid-basic {
@@ -154,7 +156,7 @@ h2 {
 
 .pe-field {
   display: block !important;
-  min-height: 58px;
+  min-height: 48px;
 }
 
 .pe-field span {
@@ -174,8 +176,8 @@ h2 {
 .pe-native-input,
 .pe-native-select {
   width: 100%;
-  min-height: 30px;
-  padding: 6px 10px;
+  min-height: 28px;
+  padding: 4px 8px;
   border: 1px solid #5d5d5d;
   border-radius: 6px;
   background: #2f2f2f;
@@ -187,7 +189,7 @@ h2 {
 }
 
 .pe-native-select {
-  height: 32px;
+  height: 28px;
   cursor: pointer;
 }
 
@@ -200,7 +202,7 @@ h2 {
 .pe-checkline {
   display: flex !important;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
   min-height: 22px;
   color: #d7d7d7;
   font-size: 12px;
@@ -217,8 +219,8 @@ h2 {
 .pe-select-btn,
 .pe-toggle-btn {
   width: 100%;
-  min-height: 32px;
-  padding: 6px 10px;
+  min-height: 28px;
+  padding: 4px 8px;
   border: 1px solid #5d5d5d;
   border-radius: 6px;
   background: #2f2f2f;
@@ -236,7 +238,7 @@ h2 {
 .pe-toggle-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 5px;
 }
 
 .pe-select-btn:focus,
@@ -248,8 +250,8 @@ h2 {
 
 .pe-editable {
   width: 100%;
-  min-height: 32px;
-  padding: 6px 10px;
+  min-height: 28px;
+  padding: 4px 8px;
   border: 1px solid #5d5d5d;
   border-radius: 6px;
   background: #2f2f2f;
@@ -280,7 +282,7 @@ h2 {
 .pe-setting-grid sp-picker,
 .pe-setting-grid sp-textfield {
   display: block !important;
-  min-height: 32px;
+  min-height: 28px;
   opacity: 1 !important;
   visibility: visible !important;
 }
@@ -295,14 +297,14 @@ h2 {
 .pe-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 5px;
 }
 
 .pe-btn {
   border: 1px solid #6a6a6a;
   border-radius: 16px;
-  padding: 6px 12px;
-  min-height: 30px;
+  padding: 5px 10px;
+  min-height: 28px;
   font-size: 13px;
   line-height: 1;
   cursor: pointer;
@@ -325,15 +327,15 @@ h2 {
 }
 
 .pe-stats {
-  margin-top: 8px;
+  margin-top: 5px;
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .pe-stat {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
-  gap: 6px;
+  gap: 5px;
   align-items: center;
 }
 
@@ -349,15 +351,15 @@ h2 {
 }
 
 .pe-preview-list {
-  margin-top: 8px;
+  margin-top: 5px;
   display: grid;
-  gap: 6px;
+  gap: 5px;
   max-height: 120px;
   overflow: auto;
 }
 
 .pe-preview-item {
-  padding: 8px;
+  padding: 5px;
   border-radius: 6px;
   border: 1px solid #454545;
   background: #2a2a2a;
@@ -384,9 +386,9 @@ h2 {
 }
 
 .pe-status {
-  margin: 8px 0 0 0;
-  padding: 8px;
-  min-height: 54px;
+  margin: 5px 0 0 0;
+  padding: 5px;
+  min-height: 48px;
   max-height: 120px;
   overflow: auto;
   border-radius: 6px;
@@ -394,7 +396,7 @@ h2 {
   background: #282828;
   color: #f3f3f3;
   font-size: 12px;
-  line-height: 1.35;
+  line-height: 1.25;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
