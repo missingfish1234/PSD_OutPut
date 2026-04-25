@@ -4,11 +4,10 @@ const { storage } = require("uxp");
 const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
-const ADVANCED_SETTINGS_OPEN_KEY = "psd-export-pipeline-advanced-open";
 const RELEASE_INFO = {
-  version: "1.1.85",
-  build: "v75",
-  stamp: "2026-04-25-03",
+  version: "1.1.86",
+  build: "v76",
+  stamp: "2026-04-25-04",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -139,10 +138,10 @@ function getSettingsGridMarkup() {
       <button id="metadataCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 metadata/layout.json"></button>
       <button id="prefabPackageCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出平台 Prefab 建置包"></button>
     </div>
-    <div id="advancedSettingsDetails" class="pe-advanced-details" data-open="0">
-      <button id="advancedSettingsToggle" class="pe-advanced-summary" type="button" aria-expanded="false">
+    <div id="advancedSettingsDetails" class="pe-advanced-details">
+      <div id="advancedSettingsToggle" class="pe-advanced-summary">
         進階選項（Spine / 關鍵字 / 掃描細節）
-      </button>
+      </div>
       <div id="advancedSettingsPanel" class="pe-advanced-panel">
       <div class="pe-advanced-grid">
         <label class="pe-field">
@@ -437,37 +436,6 @@ function bindUi() {
   ];
 
   settingControls.forEach(bindSettingControl);
-  bindAdvancedSettingsToggle();
-}
-
-function bindAdvancedSettingsToggle() {
-  if (!ui.advancedSettingsDetails || !ui.advancedSettingsToggle || !ui.advancedSettingsPanel) {
-    return;
-  }
-
-  const saved = localStorage.getItem(ADVANCED_SETTINGS_OPEN_KEY);
-  setAdvancedSettingsOpen(saved === "1", false);
-
-  ui.advancedSettingsToggle.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const nextOpen = ui.advancedSettingsDetails.getAttribute("data-open") !== "1";
-    setAdvancedSettingsOpen(nextOpen, true);
-  });
-}
-
-function setAdvancedSettingsOpen(isOpen, shouldPersist) {
-  const openValue = isOpen ? "1" : "0";
-  const baseClassName = "pe-advanced-details";
-  ui.advancedSettingsDetails.setAttribute("data-open", openValue);
-  ui.advancedSettingsDetails.setAttribute("class", isOpen ? `${baseClassName} is-open` : baseClassName);
-  ui.advancedSettingsPanel.setAttribute("class", isOpen ? "pe-advanced-panel is-open" : "pe-advanced-panel");
-  ui.advancedSettingsToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
-  ui.advancedSettingsToggle.textContent = `${isOpen ? "收合" : "展開"}進階選項（Spine / 關鍵字 / 掃描細節）`;
-
-  if (shouldPersist) {
-    localStorage.setItem(ADVANCED_SETTINGS_OPEN_KEY, openValue);
-  }
 }
 
 function bindSettingControl(element) {

@@ -114,30 +114,15 @@ h2 {
   border: 0;
   padding: 0;
   background: transparent;
-  cursor: pointer;
   font-size: 12px;
   font-weight: 700;
   text-align: left;
   color: #cfdfff;
   user-select: none;
-}
-
-.pe-advanced-summary:hover,
-.pe-advanced-summary:focus {
-  color: #ffffff;
-}
-
-.pe-advanced-details[data-open="1"] .pe-advanced-summary {
   margin-bottom: 5px;
 }
 
 .pe-advanced-panel {
-  display: none !important;
-}
-
-.pe-advanced-details.is-open .pe-advanced-panel,
-.pe-advanced-details[data-open="1"] .pe-advanced-panel,
-.pe-advanced-panel.is-open {
   display: block !important;
 }
 
