@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.86",
-  build: "v76",
-  stamp: "2026-04-25-04",
+  version: "1.1.87",
+  build: "v77",
+  stamp: "2026-04-25-05",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -138,41 +138,35 @@ function getSettingsGridMarkup() {
       <button id="metadataCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 metadata/layout.json"></button>
       <button id="prefabPackageCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出平台 Prefab 建置包"></button>
     </div>
-    <div id="advancedSettingsDetails" class="pe-advanced-details">
-      <div id="advancedSettingsToggle" class="pe-advanced-summary">
-        進階選項（Spine / 關鍵字 / 掃描細節）
-      </div>
-      <div id="advancedSettingsPanel" class="pe-advanced-panel">
-      <div class="pe-advanced-grid">
-        <label class="pe-field">
-          <span>圖層順序</span>
-          <button id="layerOrderSelect" class="pe-select-btn" type="button" data-kind="select">-</button>
-        </label>
-        <label class="pe-field">
-          <span>平台資料夾關鍵字（逗號分隔）</span>
-          <input id="platformKeywordInput" class="pe-native-input" type="text" placeholder="例如 ui,platform">
-        </label>
-        <label class="pe-field">
-          <span>Spine 資料夾關鍵字（逗號分隔）</span>
-          <input id="spineKeywordInput" class="pe-native-input" type="text" placeholder="例如 spine,bone">
-        </label>
-        <label class="pe-field">
-          <span>Spine JSON 檔名</span>
-          <input id="spineJsonFileNameInput" class="pe-native-input" type="text" placeholder="skeleton.json">
-        </label>
-        <label class="pe-field">
-          <span>Spine 圖片路徑（相對 spine 檔案）</span>
-          <input id="spineImagesPathInput" class="pe-native-input" type="text" placeholder="images/">
-        </label>
-      </div>
-      <div class="pe-toggle-grid pe-toggle-grid-advanced">
-        <button id="selectedOnlyCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="只輸出目前選取圖層"></button>
-        <button id="exportHiddenCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="包含隱藏圖層"></button>
-        <button id="recursiveNormalCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="一般模式遞迴拆解群組內圖層"></button>
-        <button id="spineFormatCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 Spine 格式（skeleton.json + atlas）"></button>
-        <button id="spineAtlasCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 Spine atlas 檔案"></button>
-      </div>
-      </div>
+    <div class="pe-advanced-summary">進階選項（固定顯示）</div>
+    <div class="pe-advanced-grid">
+      <label class="pe-field">
+        <span>圖層順序</span>
+        <button id="layerOrderSelect" class="pe-select-btn" type="button" data-kind="select">-</button>
+      </label>
+      <label class="pe-field">
+        <span>平台資料夾關鍵字（逗號分隔）</span>
+        <input id="platformKeywordInput" class="pe-native-input" type="text" placeholder="例如 ui,platform">
+      </label>
+      <label class="pe-field">
+        <span>Spine 資料夾關鍵字（逗號分隔）</span>
+        <input id="spineKeywordInput" class="pe-native-input" type="text" placeholder="例如 spine,bone">
+      </label>
+      <label class="pe-field">
+        <span>Spine JSON 檔名</span>
+        <input id="spineJsonFileNameInput" class="pe-native-input" type="text" placeholder="skeleton.json">
+      </label>
+      <label class="pe-field">
+        <span>Spine 圖片路徑（相對 spine 檔案）</span>
+        <input id="spineImagesPathInput" class="pe-native-input" type="text" placeholder="images/">
+      </label>
+    </div>
+    <div class="pe-toggle-grid pe-toggle-grid-advanced">
+      <button id="selectedOnlyCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="只輸出目前選取圖層"></button>
+      <button id="exportHiddenCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="包含隱藏圖層"></button>
+      <button id="recursiveNormalCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="一般模式遞迴拆解群組內圖層"></button>
+      <button id="spineFormatCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 Spine 格式（skeleton.json + atlas）"></button>
+      <button id="spineAtlasCheckbox" class="pe-toggle-btn" type="button" data-kind="check" data-label="輸出 Spine atlas 檔案"></button>
     </div>
   `;
 }
@@ -367,9 +361,6 @@ function bindUi() {
   ui.fullPathCheckbox = document.getElementById("fullPathCheckbox");
   ui.metadataCheckbox = document.getElementById("metadataCheckbox");
   ui.recursiveNormalCheckbox = document.getElementById("recursiveNormalCheckbox");
-  ui.advancedSettingsDetails = document.getElementById("advancedSettingsDetails");
-  ui.advancedSettingsToggle = document.getElementById("advancedSettingsToggle");
-  ui.advancedSettingsPanel = document.getElementById("advancedSettingsPanel");
   ui.docName = document.getElementById("docName");
   ui.docSize = document.getElementById("docSize");
   ui.assetCount = document.getElementById("assetCount");
@@ -400,9 +391,6 @@ function bindUi() {
     "fullPathCheckbox",
     "metadataCheckbox",
     "recursiveNormalCheckbox",
-    "advancedSettingsDetails",
-    "advancedSettingsToggle",
-    "advancedSettingsPanel",
     "docName",
     "docSize",
     "assetCount",

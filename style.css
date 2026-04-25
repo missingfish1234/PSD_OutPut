@@ -101,29 +101,17 @@ h2 {
   grid-column: 1 / -1;
 }
 
-.pe-advanced-details {
-  margin-top: 2px;
+.pe-advanced-summary {
+  width: 100%;
   border: 1px solid #4b4b4b;
   border-radius: 6px;
   padding: 5px;
   background: #2d2d2d;
-}
-
-.pe-advanced-summary {
-  width: 100%;
-  border: 0;
-  padding: 0;
-  background: transparent;
   font-size: 12px;
   font-weight: 700;
   text-align: left;
   color: #cfdfff;
   user-select: none;
-  margin-bottom: 5px;
-}
-
-.pe-advanced-panel {
-  display: block !important;
 }
 
 .pe-toggle-grid-basic {
