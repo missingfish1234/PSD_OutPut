@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.89",
-  build: "v79",
-  stamp: "2026-04-25-07",
+  version: "1.1.90",
+  build: "v80",
+  stamp: "2026-04-27-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -3584,6 +3584,8 @@ async function collectVisibilityKeepPaths(doc, stackPath) {
     return keepPaths;
   }
 
+  keepPaths.push(...collectVisibleAdjustmentOverlayPaths(doc, targetPath));
+
   const targetGrouped = await isLayerGroupedForExport(targetLayer);
   if (targetGrouped) {
     const clippingBasePath = await findClippingBaseStackPath(doc, targetPath);
@@ -3593,6 +3595,27 @@ async function collectVisibilityKeepPaths(doc, stackPath) {
   }
 
   return keepPaths;
+}
+
+function collectVisibleAdjustmentOverlayPaths(doc, targetPath) {
+  const result = [];
+  const path = Array.isArray(targetPath) ? targetPath : [];
+
+  for (let depth = 0; depth < path.length; depth += 1) {
+    const parentPath = path.slice(0, depth);
+    const subjectIndex = path[depth];
+    const siblings = getLayerCollectionByStackPath(doc, parentPath);
+
+    for (let index = 0; index < subjectIndex; index += 1) {
+      const layer = siblings[index];
+      if (!layer || layer.visible === false || !isAdjustmentLayer(layer)) {
+        continue;
+      }
+      result.push([...parentPath, index]);
+    }
+  }
+
+  return result;
 }
 
 async function findClippingBaseStackPath(doc, stackPath) {
