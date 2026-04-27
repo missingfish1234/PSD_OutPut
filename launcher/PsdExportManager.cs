@@ -350,30 +350,30 @@ internal sealed class PsdExportManagerForm : Form
                 throw new Exception("更新資料夾已存在但不是 Git repo：" + worktreePath);
             }
             Directory.CreateDirectory(Path.GetDirectoryName(worktreePath) ?? stateRoot);
-            RunProcess("git", "clone \"" + RepoUrl + "\" \"" + worktreePath + "\"", stateRoot);
+            RunGit("clone \"" + RepoUrl + "\" \"" + worktreePath + "\"", stateRoot);
         }
         return worktreePath;
     }
 
     private void UpdateWorktree(string root)
     {
-        RunProcess("git", "fetch --all --tags --prune", root);
+        RunGit("fetch --all --tags --prune", root);
         var refName = RefName;
         if (refName.StartsWith("tags/", StringComparison.OrdinalIgnoreCase))
         {
-            RunProcess("git", "checkout \"refs/tags/" + refName.Substring(5) + "\"", root);
+            RunGit("checkout \"refs/tags/" + refName.Substring(5) + "\"", root);
             return;
         }
 
         try
         {
-            RunProcess("git", "checkout \"" + refName + "\"", root);
+            RunGit("checkout \"" + refName + "\"", root);
         }
         catch
         {
-            RunProcess("git", "checkout -b \"" + refName + "\" \"origin/" + refName + "\"", root);
+            RunGit("checkout -b \"" + refName + "\" \"origin/" + refName + "\"", root);
         }
-        RunProcess("git", "pull --ff-only", root);
+        RunGit("pull --ff-only", root);
     }
 
     private string BuildCcx(string root)
@@ -411,11 +411,11 @@ internal sealed class PsdExportManagerForm : Form
 
     private string GetRemoteCommit()
     {
-        var result = RunProcess("git", "ls-remote \"" + RepoUrl + "\" \"refs/heads/" + RefName + "\"", stateRoot);
+        var result = RunGit("ls-remote \"" + RepoUrl + "\" \"refs/heads/" + RefName + "\"", stateRoot);
         var first = FirstHash(result);
         if (string.IsNullOrEmpty(first))
         {
-            result = RunProcess("git", "ls-remote \"" + RepoUrl + "\" HEAD", stateRoot);
+            result = RunGit("ls-remote \"" + RepoUrl + "\" HEAD", stateRoot);
             first = FirstHash(result);
         }
         if (string.IsNullOrEmpty(first))
@@ -427,7 +427,7 @@ internal sealed class PsdExportManagerForm : Form
 
     private string GetHeadCommit(string root)
     {
-        var text = RunProcess("git", "rev-parse HEAD", root);
+        var text = RunGit("rev-parse HEAD", root);
         return text.Trim().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "";
     }
 
@@ -523,6 +523,70 @@ internal sealed class PsdExportManagerForm : Form
             }
             return stdout;
         }
+    }
+
+    private string RunGit(string arguments, string workingDirectory)
+    {
+        var git = FindGitExecutable();
+        if (string.IsNullOrEmpty(git))
+        {
+            throw new Exception(
+                "Git was not found on this computer.\r\n" +
+                "Please install Git for Windows, then reopen PSD Export Manager and try again.\r\n" +
+                "Download: https://git-scm.com/download/win\r\n" +
+                "If Git is already installed, make sure git.exe is available in PATH."
+            );
+        }
+        return RunProcess(git, arguments, workingDirectory);
+    }
+
+    private static string FindGitExecutable()
+    {
+        var fromPath = FindExecutableInPath("git.exe");
+        if (!string.IsNullOrEmpty(fromPath))
+        {
+            return fromPath;
+        }
+
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var candidates = new[]
+        {
+            Path.Combine(programFiles, "Git", "cmd", "git.exe"),
+            Path.Combine(programFiles, "Git", "bin", "git.exe"),
+            Path.Combine(programFilesX86, "Git", "cmd", "git.exe"),
+            Path.Combine(programFilesX86, "Git", "bin", "git.exe"),
+            Path.Combine(localAppData, "Programs", "Git", "cmd", "git.exe"),
+            Path.Combine(localAppData, "Programs", "Git", "bin", "git.exe")
+        };
+        return candidates.FirstOrDefault(File.Exists) ?? "";
+    }
+
+    private static string FindExecutableInPath(string exeName)
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var rawDir in pathValue.Split(Path.PathSeparator))
+        {
+            var dir = (rawDir ?? "").Trim().Trim('"');
+            if (string.IsNullOrEmpty(dir))
+            {
+                continue;
+            }
+            try
+            {
+                var candidate = Path.Combine(dir, exeName);
+                if (File.Exists(candidate))
+                {
+                    return candidate;
+                }
+            }
+            catch
+            {
+                // Ignore malformed PATH entries.
+            }
+        }
+        return "";
     }
 
     private static string Short(string commit)
