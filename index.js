@@ -5,22 +5,23 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.91",
-  build: "v81",
-  stamp: "2026-04-27-02",
+  version: "1.1.92",
+  build: "v82",
+  stamp: "2026-05-29-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
 const PNG_LOSSLESS_SLIMMING_MIN_BYTES = 1024 * 1024;
 const PNG_LOSSLESS_SLIMMING_MAX_BYTES = 8 * 1024 * 1024;
 const ENABLE_DEEP_EXPORT_TRANSPARENCY_CHECK = false;
-const EXPORT_MODAL_BATCH_SIZE = 4;
-const EXPORT_MODAL_BATCH_COOLDOWN_MS = 40;
+const EXPORT_MODAL_BATCH_SIZE = 1;
+const EXPORT_MODAL_BATCH_COOLDOWN_MS = 120;
 const ENABLE_COCOS_FAST_TRIM_HINT = true;
 const PNG_COMPLETION_STABLE_POLLS = 2;
 const QUICK_EXPORT_TIMEOUT_MS = 10000;
 const ENABLE_SELECTION_QUICK_EXPORT = false;
-const ENABLE_DUPLICATE_SAVEAS_FALLBACK = true;
+const ENABLE_DUPLICATE_SAVEAS_FALLBACK = false;
+const ENABLE_LIGHTWEIGHT_LAYER_DOCUMENT_EXPORT = true;
 const ENABLE_DOCUMENT_QUICK_EXPORT_FALLBACK = false;
 const DEFAULT_SETTINGS = {
   mode: "normal",
@@ -68,6 +69,7 @@ const state = {
   docInfo: null,
   busy: false,
   quickExportCapability: ENABLE_SELECTION_QUICK_EXPORT ? "unknown" : "unavailable",
+  quickExportProfile: null,
   settings: { ...DEFAULT_SETTINGS },
 };
 
@@ -1733,6 +1735,9 @@ async function copyFileEntry(sourceFile, targetFolder, targetFileName) {
 
 async function exportLayerAsPng(sourceDoc, item, outputFile, exportFolder) {
   if (!ENABLE_SELECTION_QUICK_EXPORT) {
+    if (ENABLE_LIGHTWEIGHT_LAYER_DOCUMENT_EXPORT) {
+      return exportLayerViaLightweightDocument(sourceDoc, item, outputFile);
+    }
     if (!ENABLE_DUPLICATE_SAVEAS_FALLBACK) {
       throw new Error(`Selection quick export disabled and duplicate/saveAs fallback disabled: ${item && item.exportName ? item.exportName : "unknown"}`);
     }
@@ -1830,12 +1835,12 @@ async function exportLayerViaQuickExport(sourceDoc, item, outputFile, exportFold
   try {
     await selectLayerByIdForExport(item.id);
 
-    for (const commandSpec of buildQuickExportCommandSpecs()) {
+    for (const commandSpec of buildOrderedQuickExportCommandSpecs()) {
       const preparedCommandSpec = {
         ...commandSpec,
         layerId: item.id,
       };
-      for (const destinationSpec of buildQuickExportDestinationSpecs()) {
+      for (const destinationSpec of buildOrderedQuickExportDestinationSpecs()) {
         const attempt = await tryQuickExportWithDestination(item, exportFolder, outputFile, preparedCommandSpec, destinationSpec);
         attemptSummaries.push(attempt.summary);
         if (!attempt.success) {
@@ -1844,6 +1849,11 @@ async function exportLayerViaQuickExport(sourceDoc, item, outputFile, exportFold
 
         try {
           await writeFileEntryToFile(attempt.file, outputFile);
+          state.quickExportProfile = {
+            commandName: commandSpec.name,
+            destinationTokenMode: destinationSpec.tokenMode,
+            destinationDescriptorMode: destinationSpec.descriptorMode,
+          };
           return {
             strategy: "quick-export-selection",
             prepareMethod: "photoshop-export-selection",
@@ -2041,6 +2051,284 @@ async function createQuickExportTempFolder(exportFolder) {
 function shouldFallbackFromQuickExportError(error) {
   const message = formatErrorMessage(error);
   return /-1715|-25920|-128|command unavailable|程式錯誤|指令無法使用|did not create a usable PNG|未找到可用輸出/i.test(message);
+}
+
+async function exportLayerViaLightweightDocument(sourceDoc, item, outputFile) {
+  if (!sourceDoc || !item || !outputFile) {
+    throw new Error("Lightweight export 缺少必要參數。");
+  }
+  if (!app.documents || typeof app.documents.add !== "function") {
+    throw new Error("目前 Photoshop UXP 版本不支援建立暫存文件。");
+  }
+
+  const timings = createTimingProbe();
+  const exportDoc = await createTransparentExportDocument(sourceDoc, item);
+  timings.mark("createDocument");
+  let duplicatedLayers = [];
+
+  try {
+    const sourceLayers = collectSourceLayersForLightweightExport(sourceDoc, item);
+    if (!sourceLayers.length) {
+      throw new Error(`Lightweight export could not resolve source layer for ${item && item.exportName ? item.exportName : "unknown"}`);
+    }
+
+    duplicatedLayers = await duplicateLayersIntoExportDocument(sourceDoc, sourceLayers, exportDoc, item);
+    timings.mark("duplicateLayers");
+    duplicatedLayers.forEach(forceVisible);
+    await alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayers, item);
+    timings.mark("alignLayers");
+
+    const saveOptions = buildPngSaveOptionsForFallback();
+    await exportDoc.saveAs.png(outputFile, saveOptions, true);
+    timings.mark("savePng");
+    const optimizeInfo = await slimPngFileLossless(outputFile);
+    timings.mark("optimizePng");
+
+    return {
+      strategy: "lightweight-layer-document",
+      prepareMethod: "bounds-doc-duplicate-layers-align-saveAs",
+      prepareSuccess: true,
+      fallbackUsed: false,
+      sourceLayerCount: sourceLayers.length,
+      duplicatedLayerCount: duplicatedLayers.length,
+      fallbackBounds: buildCropBoundsForExport(item),
+      outputOptimize: optimizeInfo,
+      timings: timings.done(),
+    };
+  } catch (error) {
+    throw new Error(`Lightweight PNG export failed: ${formatErrorMessage(error)}`);
+  } finally {
+    await closeDocumentWithoutSaving(exportDoc);
+    await purgePhotoshopCachesAfterExport();
+  }
+}
+
+async function createTransparentExportDocument(sourceDoc, item) {
+  const bounds = item && item.bounds ? item.bounds : null;
+  const width = Math.max(1, Math.round(toNumber(bounds && bounds.width) || toNumber(sourceDoc && sourceDoc.width)));
+  const height = Math.max(1, Math.round(toNumber(bounds && bounds.height) || toNumber(sourceDoc && sourceDoc.height)));
+  const resolution = Math.max(1, roundNumber(toNumber(sourceDoc && sourceDoc.resolution) || 72));
+  return app.documents.add({
+    width,
+    height,
+    resolution,
+    mode: "RGBColorMode",
+    fill: "transparent",
+    name: `export_${sanitizeFileStem(item && item.exportName ? item.exportName : "layer")}`,
+  });
+}
+
+function collectSourceLayersForLightweightExport(sourceDoc, item) {
+  const paths = collectLayerStackPathsForLightweightExport(sourceDoc, item);
+  const layers = [];
+  const seen = new Set();
+
+  paths.forEach((path) => {
+    const layer = getLayerByStackPath(sourceDoc, path);
+    if (!layer || seen.has(layer.id)) {
+      return;
+    }
+    seen.add(layer.id);
+    layers.push(layer);
+  });
+
+  if (!layers.length && item && item.layer) {
+    layers.push(item.layer);
+  }
+
+  return layers;
+}
+
+function collectLayerStackPathsForLightweightExport(sourceDoc, item) {
+  const targetPath = Array.isArray(item && item.stackPath) ? [...item.stackPath] : [];
+  if (!targetPath.length) {
+    return [];
+  }
+
+  const paths = [targetPath];
+  paths.push(...collectVisibleAdjustmentOverlayPaths(sourceDoc, targetPath));
+
+  const targetLayer = getLayerByStackPath(sourceDoc, targetPath);
+  if (targetLayer && targetLayer.isClippingMask === true) {
+    const clippingBasePath = findClippingBaseStackPathSync(sourceDoc, targetPath);
+    if (clippingBasePath) {
+      paths.push(clippingBasePath);
+    }
+  }
+
+  return uniqueStackPaths(paths).sort(compareNumberPath);
+}
+
+function findClippingBaseStackPathSync(doc, stackPath) {
+  if (!Array.isArray(stackPath) || !stackPath.length) {
+    return null;
+  }
+
+  const parentPath = stackPath.slice(0, -1);
+  const targetIndex = stackPath[stackPath.length - 1];
+  const siblings = getLayerCollectionByStackPath(doc, parentPath);
+
+  for (let index = targetIndex + 1; index < siblings.length; index += 1) {
+    const layer = siblings[index];
+    if (!layer) {
+      continue;
+    }
+    if (!layer.isClippingMask) {
+      return [...parentPath, index];
+    }
+  }
+
+  return null;
+}
+
+function uniqueStackPaths(paths) {
+  const seen = new Set();
+  const result = [];
+  (paths || []).forEach((path) => {
+    const key = makeStackPathKey(path);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    result.push(path);
+  });
+  return result;
+}
+
+async function duplicateLayersIntoExportDocument(sourceDoc, sourceLayers, exportDoc, item) {
+  if (sourceDoc && typeof sourceDoc.duplicateLayers === "function") {
+    const duplicated = await sourceDoc.duplicateLayers(sourceLayers, exportDoc);
+    return normalizeDuplicatedLayerResult(duplicated);
+  }
+
+  const duplicated = [];
+  for (const layer of sourceLayers) {
+    if (!layer || typeof layer.duplicate !== "function") {
+      continue;
+    }
+    duplicated.push(await layer.duplicate(exportDoc, `${item && item.exportName ? item.exportName : layer.name || "Layer"}`));
+  }
+  return duplicated;
+}
+
+function normalizeDuplicatedLayerResult(result) {
+  if (!result) {
+    return [];
+  }
+  if (Array.isArray(result)) {
+    return result.filter(Boolean);
+  }
+  if (typeof result.length === "number" && typeof result !== "string") {
+    return Array.from(result).filter(Boolean);
+  }
+  return [result].filter(Boolean);
+}
+
+async function alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayers, item) {
+  const layers = Array.isArray(duplicatedLayers) ? duplicatedLayers.filter(Boolean) : [];
+  if (!layers.length) {
+    throw new Error("Lightweight export did not duplicate any layers.");
+  }
+
+  const targetIndex = Math.max(0, sourceLayers.findIndex((layer) => layer && layer.id === item.id));
+  const targetLayer = layers[targetIndex] || layers[layers.length - 1];
+  const targetBounds = getLayerBounds(targetLayer, true) || getLayerBounds(targetLayer, false);
+  const itemBounds = item && item.bounds ? item.bounds : null;
+  const deltaX = -toNumber(targetBounds && hasRenderableBounds(targetBounds) ? targetBounds.left : itemBounds && itemBounds.left);
+  const deltaY = -toNumber(targetBounds && hasRenderableBounds(targetBounds) ? targetBounds.top : itemBounds && itemBounds.top);
+
+  if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || (deltaX === 0 && deltaY === 0)) {
+    return;
+  }
+
+  await moveLayersByOffset(layers, deltaX, deltaY);
+}
+
+async function moveLayersByOffset(layers, deltaX, deltaY) {
+  const ids = (Array.isArray(layers) ? layers : [])
+    .map((layer) => layer && layer.id)
+    .filter((id) => typeof id === "number");
+  if (!ids.length) {
+    return;
+  }
+
+  const { batchPlay } = require("photoshop").action;
+  const commands = ids.map((id, index) => ({
+    _obj: "select",
+    _target: [{ _ref: "layer", _id: id }],
+    makeVisible: false,
+    layerID: [id],
+    selectionModifier: index === 0 ? undefined : { _enum: "selectionModifierType", _value: "addToSelection" },
+    _isCommand: false,
+    _options: { dialogOptions: "dontDisplay" },
+  })).map((command) => {
+    if (!command.selectionModifier) {
+      delete command.selectionModifier;
+    }
+    return command;
+  });
+
+  commands.push({
+    _obj: "move",
+    _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+    to: {
+      _obj: "offset",
+      horizontal: { _unit: "pixelsUnit", _value: deltaX },
+      vertical: { _unit: "pixelsUnit", _value: deltaY },
+    },
+    _options: { dialogOptions: "dontDisplay" },
+  });
+
+  await batchPlay(commands, {
+    synchronousExecution: true,
+    modalBehavior: "execute",
+    propagateErrorToDefaultHandler: false,
+  });
+}
+
+async function purgePhotoshopCachesAfterExport() {
+  try {
+    const { batchPlay } = require("photoshop").action;
+    await batchPlay(
+      [
+        {
+          _obj: "purge",
+          null: { _enum: "purgeItem", _value: "clipboard" },
+          _options: { dialogOptions: "dontDisplay" },
+        },
+      ],
+      {
+        synchronousExecution: true,
+        modalBehavior: "execute",
+        propagateErrorToDefaultHandler: false,
+      }
+    );
+  } catch (error) {
+    console.warn("Unable to purge Photoshop caches after export", error);
+  }
+}
+
+function createTimingProbe() {
+  const startedAt = Date.now();
+  let previousAt = startedAt;
+  const steps = [];
+  return {
+    mark(name) {
+      const now = Date.now();
+      steps.push({
+        name,
+        stepMs: now - previousAt,
+        totalMs: now - startedAt,
+      });
+      previousAt = now;
+    },
+    done() {
+      return {
+        totalMs: Date.now() - startedAt,
+        steps,
+      };
+    },
+  };
 }
 
 async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
@@ -2918,6 +3206,19 @@ function buildQuickExportDestinationSpecs() {
   ];
 }
 
+function buildOrderedQuickExportDestinationSpecs() {
+  const specs = buildQuickExportDestinationSpecs();
+  const profile = state.quickExportProfile;
+  if (!profile || !profile.destinationTokenMode || !profile.destinationDescriptorMode) {
+    return specs;
+  }
+
+  return prioritizeItems(specs, (spec) => (
+    spec.tokenMode === profile.destinationTokenMode
+    && spec.descriptorMode === profile.destinationDescriptorMode
+  ));
+}
+
 function buildQuickExportCommandSpecs() {
   return [
     {
@@ -2967,6 +3268,16 @@ function buildQuickExportCommandSpecs() {
   ];
 }
 
+function buildOrderedQuickExportCommandSpecs() {
+  const specs = buildQuickExportCommandSpecs();
+  const profile = state.quickExportProfile;
+  if (!profile || !profile.commandName) {
+    return specs;
+  }
+
+  return prioritizeItems(specs, (spec) => spec.name === profile.commandName);
+}
+
 function buildDocumentQuickExportCommandSpecs() {
   return [
     {
@@ -2986,6 +3297,25 @@ function buildDocumentQuickExportCommandSpecs() {
       synchronousExecution: false,
     },
   ];
+}
+
+function prioritizeItems(items, predicate) {
+  const list = Array.isArray(items) ? items : [];
+  if (typeof predicate !== "function") {
+    return list;
+  }
+
+  const preferred = [];
+  const rest = [];
+  list.forEach((item) => {
+    if (predicate(item)) {
+      preferred.push(item);
+    } else {
+      rest.push(item);
+    }
+  });
+
+  return preferred.length ? [...preferred, ...rest] : list;
 }
 
 function buildBatchPlayFolderReference(entry, destinationSpec) {
