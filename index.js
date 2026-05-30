@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.96",
-  build: "v86",
-  stamp: "2026-05-30-04",
+  version: "1.1.97",
+  build: "v87",
+  stamp: "2026-05-30-05",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -20,8 +20,8 @@ const ENABLE_COCOS_FAST_TRIM_HINT = true;
 const PNG_COMPLETION_STABLE_POLLS = 2;
 const QUICK_EXPORT_TIMEOUT_MS = 10000;
 const ENABLE_SELECTION_QUICK_EXPORT = false;
-const ENABLE_DUPLICATE_SAVEAS_FALLBACK = false;
-const ENABLE_LIGHTWEIGHT_LAYER_DOCUMENT_EXPORT = true;
+const ENABLE_DUPLICATE_SAVEAS_FALLBACK = true;
+const ENABLE_LIGHTWEIGHT_LAYER_DOCUMENT_EXPORT = false;
 const ENABLE_DOCUMENT_QUICK_EXPORT_FALLBACK = false;
 const DEFAULT_SETTINGS = {
   mode: "normal",
