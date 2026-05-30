@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.95",
-  build: "v85",
-  stamp: "2026-05-30-03",
+  version: "1.1.96",
+  build: "v86",
+  stamp: "2026-05-30-04",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2130,10 +2130,17 @@ async function createTransparentExportDocument(sourceDoc, item) {
 }
 
 function collectSourceLayersForLightweightExport(sourceDoc, item) {
-  const paths = collectLayerStackPathsForLightweightExport(sourceDoc, item);
   const layers = [];
   const seen = new Set();
 
+  if (item && item.layer) {
+    layers.push(item.layer);
+    if (typeof item.layer.id === "number") {
+      seen.add(item.layer.id);
+    }
+  }
+
+  const paths = collectLayerStackPathsForLightweightExport(sourceDoc, item);
   paths.forEach((path) => {
     const layer = getLayerByStackPath(sourceDoc, path);
     if (!layer || seen.has(layer.id)) {
@@ -2142,10 +2149,6 @@ function collectSourceLayersForLightweightExport(sourceDoc, item) {
     seen.add(layer.id);
     layers.push(layer);
   });
-
-  if (!layers.length && item && item.layer) {
-    layers.push(item.layer);
-  }
 
   return layers;
 }
@@ -2156,11 +2159,15 @@ function collectLayerStackPathsForLightweightExport(sourceDoc, item) {
     return [];
   }
 
-  const paths = [targetPath];
+  const resolvedTarget = getLayerByStackPath(sourceDoc, targetPath);
+  if (!resolvedTarget || !item || resolvedTarget.id !== item.id) {
+    return [];
+  }
+
+  const paths = [];
   paths.push(...collectVisibleAdjustmentOverlayPaths(sourceDoc, targetPath));
 
-  const targetLayer = getLayerByStackPath(sourceDoc, targetPath);
-  if (targetLayer && targetLayer.isClippingMask === true) {
+  if (resolvedTarget.isClippingMask === true) {
     const clippingBasePath = findClippingBaseStackPathSync(sourceDoc, targetPath);
     if (clippingBasePath) {
       paths.push(clippingBasePath);
