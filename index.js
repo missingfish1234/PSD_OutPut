@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.97",
-  build: "v87",
-  stamp: "2026-05-30-05",
+  version: "1.1.98",
+  build: "v88",
+  stamp: "2026-05-30-06",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1110,21 +1110,27 @@ function buildLayerRenderProfile(layer) {
 function resolveCandidateBounds(doc, layer, settings) {
   const preferredBounds = getLayerBounds(layer, settings.includeEffects);
   const fallbackVisibleBounds = getLayerBounds(layer, false);
+  const clippedPreferredBounds = clampBoundsToDocument(doc, preferredBounds);
+  const clippedVisibleBounds = clampBoundsToDocument(doc, fallbackVisibleBounds);
 
-  if (hasRenderableBounds(preferredBounds)) {
+  if (hasRenderableBounds(clippedPreferredBounds)) {
     return {
-      bounds: preferredBounds,
-      boundsNoEffects: hasRenderableBounds(fallbackVisibleBounds) ? fallbackVisibleBounds : preferredBounds,
+      bounds: clippedPreferredBounds,
+      boundsNoEffects: hasRenderableBounds(clippedVisibleBounds) ? clippedVisibleBounds : clippedPreferredBounds,
       emptySource: false,
     };
   }
 
-  if (hasRenderableBounds(fallbackVisibleBounds)) {
+  if (hasRenderableBounds(clippedVisibleBounds)) {
     return {
-      bounds: fallbackVisibleBounds,
-      boundsNoEffects: fallbackVisibleBounds,
+      bounds: clippedVisibleBounds,
+      boundsNoEffects: clippedVisibleBounds,
       emptySource: false,
     };
+  }
+
+  if (hasRenderableBounds(preferredBounds) || hasRenderableBounds(fallbackVisibleBounds)) {
+    return null;
   }
 
   return {
@@ -1136,6 +1142,34 @@ function resolveCandidateBounds(doc, layer, settings) {
 
 function hasRenderableBounds(bounds) {
   return Boolean(bounds && bounds.width > 0 && bounds.height > 0);
+}
+
+function clampBoundsToDocument(doc, bounds) {
+  if (!bounds) {
+    return null;
+  }
+
+  const docWidth = Math.max(1, roundNumber(toNumber(doc && doc.width)));
+  const docHeight = Math.max(1, roundNumber(toNumber(doc && doc.height)));
+  const left = clampNumber(roundNumber(toNumber(bounds.left)), 0, docWidth);
+  const top = clampNumber(roundNumber(toNumber(bounds.top)), 0, docHeight);
+  const right = clampNumber(roundNumber(toNumber(bounds.right)), 0, docWidth);
+  const bottom = clampNumber(roundNumber(toNumber(bounds.bottom)), 0, docHeight);
+  const width = roundNumber(Math.max(0, right - left));
+  const height = roundNumber(Math.max(0, bottom - top));
+
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    width,
+    height,
+  };
 }
 
 function buildTransparentFallbackBounds(doc, seedBounds) {
