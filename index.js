@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.94",
-  build: "v84",
-  stamp: "2026-05-30-02",
+  version: "1.1.95",
+  build: "v85",
+  stamp: "2026-05-30-03",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2078,6 +2078,9 @@ async function exportLayerViaLightweightDocument(sourceDoc, item, outputFile) {
     await alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayers, item);
     timings.mark("alignLayers");
 
+    await cropExportDocumentToAssetBounds(exportDoc, item);
+    timings.mark("cropDocument");
+
     const saveOptions = buildPngSaveOptionsForFallback();
     await exportDoc.saveAs.png(outputFile, saveOptions, true);
     timings.mark("savePng");
@@ -2105,8 +2108,16 @@ async function exportLayerViaLightweightDocument(sourceDoc, item, outputFile) {
 
 async function createTransparentExportDocument(sourceDoc, item) {
   const bounds = item && item.bounds ? item.bounds : null;
-  const width = Math.max(1, Math.round(toNumber(bounds && bounds.width) || toNumber(sourceDoc && sourceDoc.width)));
-  const height = Math.max(1, Math.round(toNumber(bounds && bounds.height) || toNumber(sourceDoc && sourceDoc.height)));
+  const width = Math.max(1, Math.ceil(Math.max(
+    toNumber(bounds && bounds.right),
+    toNumber(bounds && bounds.width),
+    1
+  )));
+  const height = Math.max(1, Math.ceil(Math.max(
+    toNumber(bounds && bounds.bottom),
+    toNumber(bounds && bounds.height),
+    1
+  )));
   const resolution = Math.max(1, roundNumber(toNumber(sourceDoc && sourceDoc.resolution) || 72));
   return app.documents.add({
     width,
@@ -2230,12 +2241,9 @@ async function alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayer
     throw new Error("Lightweight export did not duplicate any layers.");
   }
 
-  const targetIndex = Math.max(0, sourceLayers.findIndex((layer) => layer && layer.id === item.id));
-  const targetLayer = layers[targetIndex] || layers[layers.length - 1];
-  const targetBounds = getLayerBounds(targetLayer, true) || getLayerBounds(targetLayer, false);
   const itemBounds = item && item.bounds ? item.bounds : null;
-  const deltaX = -toNumber(targetBounds && hasRenderableBounds(targetBounds) ? targetBounds.left : itemBounds && itemBounds.left);
-  const deltaY = -toNumber(targetBounds && hasRenderableBounds(targetBounds) ? targetBounds.top : itemBounds && itemBounds.top);
+  const deltaX = -toNumber(itemBounds && itemBounds.left);
+  const deltaY = -toNumber(itemBounds && itemBounds.top);
 
   if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY) || (deltaX === 0 && deltaY === 0)) {
     return;
@@ -2254,6 +2262,20 @@ async function moveLayersByOffset(layers, deltaX, deltaY) {
   for (const layer of movableLayers) {
     await layer.translate(deltaX, deltaY);
   }
+}
+
+async function cropExportDocumentToAssetBounds(exportDoc, item) {
+  const bounds = item && item.bounds ? item.bounds : null;
+  if (!exportDoc || !hasRenderableBounds(bounds) || typeof exportDoc.crop !== "function") {
+    return;
+  }
+
+  await exportDoc.crop({
+    left: 0,
+    top: 0,
+    right: Math.max(1, Math.round(toNumber(bounds.width))),
+    bottom: Math.max(1, Math.round(toNumber(bounds.height))),
+  });
 }
 
 async function purgePhotoshopCachesAfterExport() {
