@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.1.93",
-  build: "v83",
-  stamp: "2026-05-30-01",
+  version: "1.1.94",
+  build: "v84",
+  stamp: "2026-05-30-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2075,10 +2075,9 @@ async function exportLayerViaLightweightDocument(sourceDoc, item, outputFile) {
     duplicatedLayers = await duplicateLayersIntoExportDocument(sourceDoc, sourceLayers, exportDoc, item);
     timings.mark("duplicateLayers");
     duplicatedLayers.forEach(forceVisible);
-    await alignDuplicatedLayersToExportBounds(exportDoc, duplicatedLayers, sourceLayers, item);
+    await alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayers, item);
     timings.mark("alignLayers");
 
-    await selectDocumentForExport(exportDoc);
     const saveOptions = buildPngSaveOptionsForFallback();
     await exportDoc.saveAs.png(outputFile, saveOptions, true);
     timings.mark("savePng");
@@ -2225,7 +2224,7 @@ function normalizeDuplicatedLayerResult(result) {
   return [result].filter(Boolean);
 }
 
-async function alignDuplicatedLayersToExportBounds(exportDoc, duplicatedLayers, sourceLayers, item) {
+async function alignDuplicatedLayersToExportBounds(duplicatedLayers, sourceLayers, item) {
   const layers = Array.isArray(duplicatedLayers) ? duplicatedLayers.filter(Boolean) : [];
   if (!layers.length) {
     throw new Error("Lightweight export did not duplicate any layers.");
@@ -2242,77 +2241,18 @@ async function alignDuplicatedLayersToExportBounds(exportDoc, duplicatedLayers, 
     return;
   }
 
-  await moveLayersByOffset(exportDoc, layers, deltaX, deltaY);
+  await moveLayersByOffset(layers, deltaX, deltaY);
 }
 
-async function moveLayersByOffset(exportDoc, layers, deltaX, deltaY) {
-  const ids = (Array.isArray(layers) ? layers : [])
-    .map((layer) => layer && layer.id)
-    .filter((id) => typeof id === "number");
-  if (!ids.length) {
+async function moveLayersByOffset(layers, deltaX, deltaY) {
+  const movableLayers = (Array.isArray(layers) ? layers : [])
+    .filter((layer) => layer && typeof layer.translate === "function");
+  if (!movableLayers.length) {
     return;
   }
 
-  await selectDocumentForExport(exportDoc);
-
-  const { batchPlay } = require("photoshop").action;
-  const commands = ids.map((id, index) => ({
-    _obj: "select",
-    _target: [{ _ref: "layer", _id: id }],
-    makeVisible: false,
-    layerID: [id],
-    selectionModifier: index === 0 ? undefined : { _enum: "selectionModifierType", _value: "addToSelection" },
-    _isCommand: false,
-    _options: { dialogOptions: "dontDisplay" },
-  })).map((command) => {
-    if (!command.selectionModifier) {
-      delete command.selectionModifier;
-    }
-    return command;
-  });
-
-  commands.push({
-    _obj: "move",
-    _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
-    to: {
-      _obj: "offset",
-      horizontal: { _unit: "pixelsUnit", _value: deltaX },
-      vertical: { _unit: "pixelsUnit", _value: deltaY },
-    },
-    _options: { dialogOptions: "dontDisplay" },
-  });
-
-  await batchPlay(commands, {
-    synchronousExecution: true,
-    modalBehavior: "execute",
-    propagateErrorToDefaultHandler: false,
-  });
-}
-
-async function selectDocumentForExport(doc) {
-  if (!doc || typeof doc.id !== "number") {
-    return;
-  }
-
-  try {
-    const { batchPlay } = require("photoshop").action;
-    await batchPlay(
-      [
-        {
-          _obj: "select",
-          _target: [{ _ref: "document", _id: doc.id }],
-          _isCommand: false,
-          _options: { dialogOptions: "dontDisplay" },
-        },
-      ],
-      {
-        synchronousExecution: true,
-        modalBehavior: "execute",
-        propagateErrorToDefaultHandler: false,
-      }
-    );
-  } catch (error) {
-    console.warn("Unable to select export document before layer operation", error);
+  for (const layer of movableLayers) {
+    await layer.translate(deltaX, deltaY);
   }
 }
 
