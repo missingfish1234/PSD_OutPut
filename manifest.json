@@ -2,10 +2,7 @@
   "manifestVersion": 4,
   "id": "com.fishwang.psdexportpipeline.v7",
   "name": "PSD Export Pipeline",
-  "version": "1.2.0",
-  "requiredPermissions": {
-    "localFileSystem": "fullAccess"
-  },
+  "version": "1.2.1",
   "main": "index.html",
   "host": {
     "app": "PS",

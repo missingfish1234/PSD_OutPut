@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.0",
-  build: "v90",
-  stamp: "2026-05-30-08",
+  version: "1.2.1",
+  build: "v91",
+  stamp: "2026-05-30-09",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -18,9 +18,9 @@ const EXPORT_MODAL_BATCH_SIZE = 1;
 const EXPORT_MODAL_BATCH_COOLDOWN_MS = 120;
 const ENABLE_COCOS_FAST_TRIM_HINT = true;
 const PNG_COMPLETION_STABLE_POLLS = 2;
-const QUICK_EXPORT_TIMEOUT_MS = 4000;
-const ENABLE_SELECTION_QUICK_EXPORT = true;
-const ENABLE_DUPLICATE_SAVEAS_FALLBACK = false;
+const QUICK_EXPORT_TIMEOUT_MS = 10000;
+const ENABLE_SELECTION_QUICK_EXPORT = false;
+const ENABLE_DUPLICATE_SAVEAS_FALLBACK = true;
 const ENABLE_LIGHTWEIGHT_LAYER_DOCUMENT_EXPORT = false;
 const ENABLE_DOCUMENT_QUICK_EXPORT_FALLBACK = false;
 const DEFAULT_SETTINGS = {
@@ -1887,7 +1887,6 @@ async function exportLayerViaQuickExport(sourceDoc, item, outputFile, exportFold
             commandName: commandSpec.name,
             destinationTokenMode: destinationSpec.tokenMode,
             destinationDescriptorMode: destinationSpec.descriptorMode,
-            destinationTempRoot: destinationSpec.tempRoot,
           };
           return {
             strategy: "quick-export-selection",
@@ -1897,7 +1896,6 @@ async function exportLayerViaQuickExport(sourceDoc, item, outputFile, exportFold
             attempts: attemptSummaries,
             command: attempt.summary.command,
             destFolder: {
-              tempRoot: attempt.summary.destFolder.tempRoot,
               mode: attempt.summary.destFolder.mode,
               descriptorMode: attempt.summary.destFolder.descriptorMode,
               valueType: attempt.summary.destFolder.valueType,
@@ -1967,7 +1965,6 @@ async function exportLayerViaDuplicateQuickExportDocument(sourceDoc, item, outpu
             attempts: attemptSummaries,
             command: attempt.summary.command,
             destFolder: {
-              tempRoot: attempt.summary.destFolder.tempRoot,
               mode: attempt.summary.destFolder.mode,
               descriptorMode: attempt.summary.destFolder.descriptorMode,
               valueType: attempt.summary.destFolder.valueType,
@@ -2004,14 +2001,14 @@ async function tryQuickExportWithDestination(item, exportFolder, outputFile, com
   let outputFileSnapshot = null;
 
   try {
-    tempFolder = await createQuickExportTempFolder(exportFolder, destinationSpec);
+    tempFolder = await createQuickExportTempFolder(exportFolder);
     rootSnapshot = await captureFolderRootSnapshot(exportFolder);
     outputFileSnapshot = await captureEntrySnapshot(outputFile);
     destFolderRef = buildBatchPlayFolderReference(tempFolder, destinationSpec);
     exportBatchPlayResult = await runQuickExportBatchPlay(destFolderRef.descriptorValue, commandSpec);
     assertBatchPlaySucceeded(exportBatchPlayResult, `Quick export failed for ${item.exportName}`);
 
-    const exportedFile = await waitForQuickExportOutput(tempFolder, exportFolder, outputFile, rootSnapshot, outputFileSnapshot, destinationSpec.waitTimeoutMs || QUICK_EXPORT_TIMEOUT_MS);
+    const exportedFile = await waitForQuickExportOutput(tempFolder, exportFolder, outputFile, rootSnapshot, outputFileSnapshot, QUICK_EXPORT_TIMEOUT_MS);
     outputInfo = exportedFile ? exportedFile.debug : null;
     const completedTempFolder = tempFolder;
     tempFolder = null;
@@ -2046,14 +2043,14 @@ async function tryQuickExportDocumentWithDestination(exportDoc, item, exportFold
   let outputFileSnapshot = null;
 
   try {
-    tempFolder = await createQuickExportTempFolder(exportFolder, destinationSpec);
+    tempFolder = await createQuickExportTempFolder(exportFolder);
     rootSnapshot = await captureFolderRootSnapshot(exportFolder);
     outputFileSnapshot = await captureEntrySnapshot(outputFile);
     destFolderRef = buildBatchPlayFolderReference(tempFolder, destinationSpec);
     exportBatchPlayResult = await runDocumentQuickExportBatchPlay(exportDoc && exportDoc.id, destFolderRef.descriptorValue, commandSpec);
     assertBatchPlaySucceeded(exportBatchPlayResult, `Document quick export failed for ${item.exportName}`);
 
-    const exportedFile = await waitForQuickExportOutput(tempFolder, exportFolder, outputFile, rootSnapshot, outputFileSnapshot, destinationSpec.waitTimeoutMs || QUICK_EXPORT_TIMEOUT_MS);
+    const exportedFile = await waitForQuickExportOutput(tempFolder, exportFolder, outputFile, rootSnapshot, outputFileSnapshot, QUICK_EXPORT_TIMEOUT_MS);
     outputInfo = exportedFile ? exportedFile.debug : null;
     const completedTempFolder = tempFolder;
     tempFolder = null;
@@ -2078,21 +2075,11 @@ async function tryQuickExportDocumentWithDestination(exportDoc, item, exportFold
   }
 }
 
-async function createQuickExportTempFolder(exportFolder, destinationSpec) {
-  let rootFolder = exportFolder;
-  if (destinationSpec && destinationSpec.tempRoot === "plugin-temp" && typeof fs.getTemporaryFolder === "function") {
-    try {
-      rootFolder = await fs.getTemporaryFolder();
-    } catch (error) {
-      console.warn("Unable to use plugin temporary folder for quick export", error);
-      rootFolder = exportFolder;
-    }
-  }
-
-  if (!rootFolder || typeof rootFolder.createFolder !== "function") {
+async function createQuickExportTempFolder(exportFolder) {
+  if (!exportFolder || typeof exportFolder.createFolder !== "function") {
     throw new Error("缺少 quick export 輸出資料夾。");
   }
-  return rootFolder.createFolder(`_psd_export_tmp_${Date.now()}_${Math.floor(Math.random() * 100000)}`);
+  return exportFolder.createFolder(`_psd_export_tmp_${Date.now()}_${Math.floor(Math.random() * 100000)}`);
 }
 
 function shouldFallbackFromQuickExportError(error) {
@@ -2727,7 +2714,6 @@ async function buildQuickExportAttemptSummary(commandSpec, destFolderRef, export
       hasTarget: Boolean(commandSpec && commandSpec.target && (Array.isArray(commandSpec.target) ? commandSpec.target.length : true)),
     },
     destFolder: {
-      tempRoot: destFolderRef && destFolderRef.tempRoot ? destFolderRef.tempRoot : "unknown",
       mode: destFolderRef && destFolderRef.mode ? destFolderRef.mode : "unknown",
       descriptorMode: destFolderRef && destFolderRef.descriptorMode ? destFolderRef.descriptorMode : "unknown",
       valueType: destFolderRef ? typeof destFolderRef.value : "unknown",
@@ -3248,10 +3234,8 @@ async function writeFileEntryToFile(sourceFile, targetFile) {
 
 function buildQuickExportDestinationSpecs() {
   return [
-    { tempRoot: "plugin-temp", tokenMode: "session-token", descriptorMode: "raw", waitTimeoutMs: 4000 },
-    { tempRoot: "plugin-temp", tokenMode: "native-path", descriptorMode: "raw", waitTimeoutMs: 4000 },
-    { tempRoot: "export-folder", tokenMode: "session-token", descriptorMode: "raw", waitTimeoutMs: 4000 },
-    { tempRoot: "export-folder", tokenMode: "native-path", descriptorMode: "raw", waitTimeoutMs: 4000 },
+    { tokenMode: "native-path", descriptorMode: "raw" },
+    { tokenMode: "session-token", descriptorMode: "raw" },
   ];
 }
 
@@ -3265,7 +3249,6 @@ function buildOrderedQuickExportDestinationSpecs() {
   return prioritizeItems(specs, (spec) => (
     spec.tokenMode === profile.destinationTokenMode
     && spec.descriptorMode === profile.destinationDescriptorMode
-    && spec.tempRoot === profile.destinationTempRoot
   ));
 }
 
@@ -3292,6 +3275,28 @@ function buildQuickExportCommandSpecs() {
       dialogOptions: "dontDisplay",
       modalBehavior: "execute",
       synchronousExecution: true,
+    },
+    {
+      name: "select-export-no-target-basic",
+      includeSelect: true,
+      layerId: null,
+      target: null,
+      openWindow: false,
+      isCommand: true,
+      dialogOptions: "dontDisplay",
+      modalBehavior: "execute",
+      synchronousExecution: true,
+    },
+    {
+      name: "select-export-enum-legacy",
+      includeSelect: true,
+      layerId: null,
+      target: { _ref: "layer", _enum: "ordinal", _value: "targetEnum" },
+      openWindow: false,
+      isCommand: false,
+      dialogOptions: "dontDisplay",
+      modalBehavior: "execute",
+      synchronousExecution: false,
     },
   ];
 }
@@ -3371,7 +3376,6 @@ function buildBatchPlayFolderReference(entry, destinationSpec) {
     : rawValue;
 
   return {
-    tempRoot: destinationSpec && destinationSpec.tempRoot ? destinationSpec.tempRoot : "export-folder",
     mode,
     value: rawValue,
     descriptorMode,
@@ -3465,13 +3469,12 @@ function safeJsonStringify(value) {
 function formatQuickExportAttemptCompact(attempts) {
   return toArray(attempts).map((attempt) => {
     const command = attempt && attempt.command && attempt.command.name ? attempt.command.name : "cmd?";
-    const tempRoot = attempt && attempt.destFolder && attempt.destFolder.tempRoot ? attempt.destFolder.tempRoot : "root?";
     const dest = attempt && attempt.destFolder && attempt.destFolder.mode ? attempt.destFolder.mode : "dest?";
     const shape = attempt && attempt.destFolder && attempt.destFolder.descriptorMode ? attempt.destFolder.descriptorMode : "shape?";
     const batchPlay = toArray(attempt && attempt.batchPlay);
     const errorResult = batchPlay.find((item) => item && item._obj === "error");
     const resultCode = errorResult && typeof errorResult.result !== "undefined" ? String(errorResult.result) : (attempt && attempt.error ? "ERR" : "OK");
-    return `${command}/${tempRoot}/${dest}/${shape}:${resultCode}`;
+    return `${command}/${dest}/${shape}:${resultCode}`;
   }).join(", ");
 }
 
