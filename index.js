@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.2",
-  build: "v92",
-  stamp: "2026-06-01-01",
+  version: "1.2.3",
+  build: "v93",
+  stamp: "2026-06-01-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -4465,7 +4465,10 @@ function forceVisible(layer) {
 }
 
 function makeMetadataRecord(item, exportDebug) {
-  const cocosContentSize = item.cocosTrimHint
+  const slicing = buildSlicingMetadata(item);
+  const cocosContentSize = slicing.enabled
+    ? { width: item.bounds.width, height: item.bounds.height }
+    : item.cocosTrimHint
     ? { width: item.cocosTrimHint.width, height: item.cocosTrimHint.height }
     : { width: item.bounds.width, height: item.bounds.height };
 
@@ -4483,6 +4486,7 @@ function makeMetadataRecord(item, exportDebug) {
     kind: item.kind,
     emptySource: Boolean(item.emptySource),
     renderProfile: item.renderProfile || buildLayerRenderProfile(item.layer),
+    slicing,
     exportDebug: exportDebug || null,
     stackPath: item.stackPath,
     bounds: item.bounds,
@@ -4496,11 +4500,15 @@ function makeMetadataRecord(item, exportDebug) {
       anchor: "center",
       anchoredPosition: item.position.unity,
       sizeDelta: { x: item.bounds.width, y: item.bounds.height },
+      imageType: slicing.enabled ? "sliced" : "simple",
+      border: slicing.border,
     },
     cocos: {
       anchor: "center",
       position: item.position.cocos,
       contentSize: cocosContentSize,
+      spriteType: slicing.enabled ? "sliced" : "simple",
+      border: slicing.border,
     },
     spine: {
       slotName: item.exportName,
@@ -4508,6 +4516,98 @@ function makeMetadataRecord(item, exportDebug) {
       bonePosition: item.position.spine,
       size: { width: item.bounds.width, height: item.bounds.height },
     },
+  };
+}
+
+function buildSlicingMetadata(item) {
+  const disabled = {
+    enabled: false,
+    type: "simple",
+    source: "none",
+    marker: "",
+    border: { left: 0, right: 0, top: 0, bottom: 0 },
+  };
+  if (!item || !item.bounds) {
+    return disabled;
+  }
+
+  const label = [
+    item.sourceName,
+    item.sourcePath,
+    item.sanitizedSourcePath,
+    item.exportName,
+  ].filter(Boolean).join(" ");
+  if (/\[(?:no-?slice|simple)\]/i.test(label)) {
+    return {
+      ...disabled,
+      source: "name-marker",
+      marker: "simple",
+    };
+  }
+
+  const markerMatch = label.match(/\[(?:slice|sliced|9slice|9-slice)\s*[:=]\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\]/i);
+  const hasMarker = Boolean(markerMatch || /(?:^|[\s_\-[/(])(?:slice|sliced|9slice|9-slice)(?:$|[\s_\-\]/):=])|九宮格|切片/i.test(label));
+  if (!hasMarker) {
+    return disabled;
+  }
+
+  const width = Math.max(1, roundNumber(toNumber(item.bounds.width)));
+  const height = Math.max(1, roundNumber(toNumber(item.bounds.height)));
+  const defaultX = Math.max(1, Math.round(width * 0.25));
+  const defaultY = Math.max(1, Math.round(height * 0.25));
+  const border = markerMatch
+    ? {
+        left: toNumber(markerMatch[1]),
+        right: toNumber(markerMatch[2]),
+        top: toNumber(markerMatch[3]),
+        bottom: toNumber(markerMatch[4]),
+      }
+    : {
+        left: defaultX,
+        right: defaultX,
+        top: defaultY,
+        bottom: defaultY,
+      };
+
+  return {
+    enabled: true,
+    type: "sliced",
+    source: markerMatch ? "name-marker-explicit" : "name-marker-default",
+    marker: markerMatch ? markerMatch[0] : "sliced",
+    border: normalizeSliceBorder(border, width, height),
+  };
+}
+
+function normalizeSliceBorder(border, width, height) {
+  const safeWidth = Math.max(1, roundNumber(toNumber(width)));
+  const safeHeight = Math.max(1, roundNumber(toNumber(height)));
+  const maxX = Math.max(0, Math.floor((safeWidth - 1) / 2));
+  const maxY = Math.max(0, Math.floor((safeHeight - 1) / 2));
+  return {
+    left: clampNumber(Math.round(toNumber(border && border.left)), 0, maxX),
+    right: clampNumber(Math.round(toNumber(border && border.right)), 0, maxX),
+    top: clampNumber(Math.round(toNumber(border && border.top)), 0, maxY),
+    bottom: clampNumber(Math.round(toNumber(border && border.bottom)), 0, maxY),
+  };
+}
+
+function normalizeSlicingMetadata(asset) {
+  const slicing = asset && asset.slicing ? asset.slicing : null;
+  if (!slicing || !slicing.enabled) {
+    return {
+      enabled: false,
+      type: "simple",
+      border: { left: 0, right: 0, top: 0, bottom: 0 },
+    };
+  }
+  const width = asset && asset.bounds ? asset.bounds.width : asset && asset.width;
+  const height = asset && asset.bounds ? asset.bounds.height : asset && asset.height;
+  return {
+    enabled: true,
+    type: "sliced",
+    source: slicing.source || "",
+    marker: slicing.marker || "",
+    border: normalizeSliceBorder(slicing.border || {}, width, height),
   };
 }
 
@@ -5158,7 +5258,7 @@ async function writeUnity63AssetTreeMetas(assetsRoot, psdExportRoot, docFolder, 
 
   for (const asset of assets) {
     const imageMeta = await docImagesFolder.createFile(`${asset.name}.png.meta`, { overwrite: true });
-    await imageMeta.write(buildUnitySpriteMeta(stableUnityGuid(`unity63:file:${docFolder.name}:Images:${asset.name}.png`)));
+    await imageMeta.write(buildUnitySpriteMeta(stableUnityGuid(`unity63:file:${docFolder.name}:Images:${asset.name}.png`), asset));
   }
 }
 
@@ -5572,6 +5672,8 @@ function arrayBufferToBase64(buffer) {
 
 function buildCocosImageMeta(asset, imageUuid, trimInfo) {
   const info = normalizeCocosTrimInfo(asset, trimInfo);
+  const slicing = normalizeSlicingMetadata(asset);
+  const border = slicing.border || { left: 0, right: 0, top: 0, bottom: 0 };
   const width = info.width;
   const height = info.height;
   const rawWidth = info.rawWidth;
@@ -5624,10 +5726,10 @@ function buildCocosImageMeta(asset, imageUuid, trimInfo) {
           height,
           rawWidth,
           rawHeight,
-          borderTop: 0,
-          borderBottom: 0,
-          borderLeft: 0,
-          borderRight: 0,
+          borderTop: border.top,
+          borderBottom: border.bottom,
+          borderLeft: border.left,
+          borderRight: border.right,
           packable: true,
           pixelsToUnit: 100,
           pivotX: 0.5,
@@ -5776,9 +5878,12 @@ function buildCocosDirectPrefabDocument(assets, rootFolderName, prefabFileName, 
     const spriteIndex = nodeIndex + 3;
     const spriteCompIndex = nodeIndex + 4;
     const prefabInfoIndex = nodeIndex + 5;
+    const slicing = normalizeSlicingMetadata(asset);
+    const cocosLayout = asset && asset.cocos ? asset.cocos : {};
+    const cocosContentSize = cocosLayout && cocosLayout.contentSize ? cocosLayout.contentSize : null;
     const contentSize = {
-      width: Math.max(1, roundNumber(toNumber(asset && asset.bounds ? asset.bounds.width : trimInfo.rawWidth))),
-      height: Math.max(1, roundNumber(toNumber(asset && asset.bounds ? asset.bounds.height : trimInfo.rawHeight))),
+      width: Math.max(1, roundNumber(toNumber(cocosContentSize && cocosContentSize.width ? cocosContentSize.width : (asset && asset.bounds ? asset.bounds.width : trimInfo.rawWidth)))),
+      height: Math.max(1, roundNumber(toNumber(cocosContentSize && cocosContentSize.height ? cocosContentSize.height : (asset && asset.bounds ? asset.bounds.height : trimInfo.rawHeight)))),
     };
     const position = asset.cocos && asset.cocos.position ? asset.cocos.position : { x: 0, y: 0 };
 
@@ -5833,7 +5938,7 @@ function buildCocosDirectPrefabDocument(assets, rootFolderName, prefabFileName, 
         __uuid__: `${spriteMeta.imageUuid}@f9941`,
         __expectedType__: "cc.SpriteFrame",
       },
-      _type: 0,
+      _type: slicing.enabled ? 1 : 0,
       _fillType: 0,
       _sizeMode: 0,
       _fillCenter: makeCocosVec2(0, 0),
@@ -6043,6 +6148,7 @@ function buildEnginePrefabPayload(assets, target, imagesRelativeToEnginePackage)
       textureFile: `${asset.name}.png`,
       width: asset.bounds.width,
       height: asset.bounds.height,
+      slicing: normalizeSlicingMetadata(asset),
       unity: asset.unity,
       cocos: asset.cocos,
     })),
@@ -6098,7 +6204,9 @@ function buildUnityCsMeta(guid) {
   ].join("\n");
 }
 
-function buildUnitySpriteMeta(guid) {
+function buildUnitySpriteMeta(guid, asset) {
+  const slicing = normalizeSlicingMetadata(asset);
+  const border = slicing.border || { left: 0, right: 0, top: 0, bottom: 0 };
   return [
     "fileFormatVersion: 2",
     `guid: ${guid}`,
@@ -6151,7 +6259,7 @@ function buildUnitySpriteMeta(guid) {
     "  alignment: 0",
     "  spritePivot: {x: 0.5, y: 0.5}",
     "  spritePixelsToUnits: 100",
-    "  spriteBorder: {x: 0, y: 0, z: 0, w: 0}",
+    `  spriteBorder: {x: ${border.left}, y: ${border.bottom}, z: ${border.right}, w: ${border.top}}`,
     "  spriteGenerateFallbackPhysicsShape: 1",
     "  alphaUsage: 1",
     "  alphaIsTransparency: 1",
@@ -6287,7 +6395,9 @@ function buildUnityBuilderScript(options) {
     "    [Serializable] private class LayoutRoot { public LayoutDocument document; public LayoutPaths paths; public List<LayoutAsset> assets; }",
     "    [Serializable] private class LayoutDocument { public string name; public float width; public float height; }",
     "    [Serializable] private class LayoutPaths { public string imagesRelativeToEnginePackage; }",
-    "    [Serializable] private class LayoutAsset { public string name; public string texture; public string textureFile; public float width; public float height; public UnityLayout unity; }",
+    "    [Serializable] private class LayoutAsset { public string name; public string texture; public string textureFile; public float width; public float height; public SliceLayout slicing; public UnityLayout unity; }",
+    "    [Serializable] private class SliceLayout { public bool enabled; public string type; public SliceBorder border; }",
+    "    [Serializable] private class SliceBorder { public float left; public float right; public float top; public float bottom; }",
     "    [Serializable] private class UnityLayout { public string anchor; public Vec2 anchoredPosition; public Vec2 sizeDelta; }",
     "    [Serializable] private class Vec2 { public float x; public float y; }",
     "",
@@ -6356,10 +6466,11 @@ function buildUnityBuilderScript(options) {
     "            var textureFileName = string.IsNullOrEmpty(asset.textureFile) ? $\"{asset.name}.png\" : asset.textureFile;",
     "            var textureFullPath = Path.GetFullPath(Path.Combine(imageDir, textureFileName));",
     "            var textureAssetPath = ToAssetPath(textureFullPath);",
-    "            EnsureSpriteImport(textureAssetPath);",
+    "            EnsureSpriteImport(textureAssetPath, asset);",
     "            var sprite = string.IsNullOrEmpty(textureAssetPath) ? null : AssetDatabase.LoadAssetAtPath<Sprite>(textureAssetPath);",
     "            var image = go.GetComponent<Image>();",
     "            image.sprite = sprite;",
+    "            image.type = asset.slicing != null && asset.slicing.enabled ? Image.Type.Sliced : Image.Type.Simple;",
     "            if (sprite == null) image.color = new Color(1f, 0.25f, 0.25f, 0.35f);",
     "            rect.sizeDelta = new Vector2(asset.unity.sizeDelta.x, asset.unity.sizeDelta.y);",
     "        }",
@@ -6410,7 +6521,7 @@ function buildUnityBuilderScript(options) {
     "        return string.IsNullOrEmpty(clean) ? \"PSD\" : clean;",
     "    }",
     "",
-    "    private static void EnsureSpriteImport(string assetPath)",
+    "    private static void EnsureSpriteImport(string assetPath, LayoutAsset asset)",
     "    {",
     "        if (string.IsNullOrEmpty(assetPath)) return;",
     "        var importer = AssetImporter.GetAtPath(assetPath) as TextureImporter;",
@@ -6419,6 +6530,10 @@ function buildUnityBuilderScript(options) {
     "        var changed = false;",
     "        if (importer.textureType != TextureImporterType.Sprite) { importer.textureType = TextureImporterType.Sprite; changed = true; }",
     "        if (importer.spriteImportMode != SpriteImportMode.Single) { importer.spriteImportMode = SpriteImportMode.Single; changed = true; }",
+    "        var border = asset?.slicing != null && asset.slicing.enabled && asset.slicing.border != null",
+    "            ? new Vector4(asset.slicing.border.left, asset.slicing.border.bottom, asset.slicing.border.right, asset.slicing.border.top)",
+    "            : Vector4.zero;",
+    "        if (importer.spriteBorder != border) { importer.spriteBorder = border; changed = true; }",
     "        if (changed) importer.SaveAndReimport();",
     "    }",
     "}",
@@ -6512,7 +6627,7 @@ function buildCocos388BuilderScript() {
     "        const cocos = asset.cocos || {};",
     "        const position = cocos.position || { x: 0, y: 0 };",
     "        const bounds = asset.bounds || {};",
-    "        const contentSize = { width: bounds.width || asset.width || 0, height: bounds.height || asset.height || 0 };",
+    "        const contentSize = cocos.contentSize || { width: bounds.width || asset.width || 0, height: bounds.height || asset.height || 0 };",
     "        child.setPosition(new Vec3(position.x || 0, position.y || 0, 0));",
     "",
     "        const transform = child.addComponent(UITransform);",
@@ -6520,6 +6635,7 @@ function buildCocos388BuilderScript() {
     "",
     "        const sprite = child.addComponent(Sprite);",
     "        sprite.sizeMode = Sprite.SizeMode.CUSTOM;",
+    "        if (asset.slicing && asset.slicing.enabled) sprite.type = Sprite.Type.SLICED;",
     "        sprite.trim = false;",
     "        const textureFile = asset.textureFile || `${asset.texture || asset.name}.png`;",
     "        const frame = await this.loadSpriteFrame(textureFile);",
@@ -6740,7 +6856,7 @@ function buildCocos388ExtensionSceneScript() {
     "        const cocos = asset.cocos || {};",
     "        const position = cocos.position || { x: 0, y: 0 };",
     "        const bounds = asset.bounds || {};",
-    "        const contentSize = { width: bounds.width || asset.width || 0, height: bounds.height || asset.height || 0 };",
+    "        const contentSize = cocos.contentSize || { width: bounds.width || asset.width || 0, height: bounds.height || asset.height || 0 };",
     "        child.setPosition(new Vec3(position.x || 0, position.y || 0, 0));",
     "",
     "        const transform = child.addComponent(UITransform);",
@@ -6748,6 +6864,7 @@ function buildCocos388ExtensionSceneScript() {
     "",
     "        const sprite = child.addComponent(Sprite);",
     "        sprite.sizeMode = Sprite.SizeMode.CUSTOM;",
+    "        if (asset.slicing && asset.slicing.enabled) sprite.type = Sprite.Type.SLICED;",
     "        sprite.trim = false;",
     "        const textureFile = asset.textureFile || `${asset.texture || asset.name}.png`;",
     "        const frame = await loadSpriteFrame(layoutData, textureFile);",
