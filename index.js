@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.5",
-  build: "v95",
-  stamp: "2026-06-01-04",
+  version: "1.2.6",
+  build: "v96",
+  stamp: "2026-06-01-05",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -5762,18 +5762,32 @@ async function loadBitmapFromFileEntry(fileEntry) {
     throw new Error("PNG read returned empty data");
   }
 
+  const decodeTimeoutMs = 12000;
+  const blob = typeof Blob === "function" ? new Blob([bytes], { type: "image/png" }) : null;
   if (typeof Blob === "function" && typeof createImageBitmap === "function") {
     try {
-      const blob = new Blob([bytes], { type: "image/png" });
-      return await withTimeout(Promise.resolve(createImageBitmap(blob)), 1800, "createImageBitmap");
+      return await withTimeout(Promise.resolve(createImageBitmap(blob)), decodeTimeoutMs, "createImageBitmap");
     } catch (error) {
       console.warn("createImageBitmap decode failed, falling back to Image()", error);
     }
   }
 
   if (typeof Image === "function") {
+    if (blob && typeof URL !== "undefined" && typeof URL.createObjectURL === "function") {
+      const objectUrl = URL.createObjectURL(blob);
+      try {
+        return await loadImageFromUrl(objectUrl, decodeTimeoutMs);
+      } catch (error) {
+        console.warn("Object URL Image decode failed, falling back to data URL", error);
+      } finally {
+        if (typeof URL.revokeObjectURL === "function") {
+          URL.revokeObjectURL(objectUrl);
+        }
+      }
+    }
+
     const dataUrl = `data:image/png;base64,${arrayBufferToBase64(bytes)}`;
-    return loadImageFromDataUrl(dataUrl);
+    return loadImageFromUrl(dataUrl, decodeTimeoutMs);
   }
 
   throw new Error("No supported PNG decode path is available in this UXP runtime");
@@ -5822,13 +5836,13 @@ function withTimeout(promise, timeoutMs, label) {
   });
 }
 
-function loadImageFromDataUrl(dataUrl) {
+function loadImageFromUrl(url, timeoutMs) {
   return withTimeout(new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
     image.onerror = (error) => reject(error || new Error("Image decode failed"));
-    image.src = dataUrl;
-  }), 1800, "Image decode");
+    image.src = url;
+  }), timeoutMs || 12000, "Image decode");
 }
 
 function arrayBufferToBase64(buffer) {
