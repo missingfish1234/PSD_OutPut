@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.3",
-  build: "v93",
-  stamp: "2026-06-01-02",
+  version: "1.2.4",
+  build: "v94",
+  stamp: "2026-06-01-03",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1585,6 +1585,10 @@ async function runExport() {
           const fileFolder = await ensureNestedFolders(imagesFolder, item.exportFolderSegments);
           const file = await fileFolder.createFile(`${item.exportName}.png`, { overwrite: true });
           const exportDebug = await exportLayerAsPng(doc, item, file, imagesFolder);
+          const slicedOptimizeInfo = await postprocessSlicedPngOutput(file, item);
+          if (slicedOptimizeInfo) {
+            exportDebug.slicedOptimize = slicedOptimizeInfo;
+          }
           results.push(makeMetadataRecord(item, exportDebug));
         }
       }, { commandName: `PSD Export Pipeline ${batchStart + 1}-${batchEnd}` });
@@ -3236,6 +3240,136 @@ async function writeFileEntryToFile(sourceFile, targetFile) {
 
   const data = await sourceFile.read();
   await targetFile.write(data);
+}
+
+async function postprocessSlicedPngOutput(fileEntry, item) {
+  const slicing = buildSlicingMetadata(item);
+  if (!fileEntry || !slicing.enabled) {
+    return null;
+  }
+
+  try {
+    const bitmap = await loadBitmapFromFileEntry(fileEntry);
+    const sourceWidth = Math.max(1, Math.round(toNumber(bitmap && bitmap.width)));
+    const sourceHeight = Math.max(1, Math.round(toNumber(bitmap && bitmap.height)));
+    const border = normalizeSliceBorder(slicing.border, sourceWidth, sourceHeight);
+    const stretchWidth = Math.max(1, sourceWidth - border.left - border.right);
+    const stretchHeight = Math.max(1, sourceHeight - border.top - border.bottom);
+    if (stretchWidth <= 1 && stretchHeight <= 1) {
+      return {
+        skipped: true,
+        reason: "already-minimal",
+        sourceWidth,
+        sourceHeight,
+        outputWidth: sourceWidth,
+        outputHeight: sourceHeight,
+        border,
+      };
+    }
+
+    const outputWidth = Math.max(1, border.left + 1 + border.right);
+    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
+    const canvas = document.createElement("canvas");
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+    const context = canvas.getContext("2d");
+    context.clearRect(0, 0, outputWidth, outputHeight);
+
+    drawNineSliceRegion(context, bitmap, border, sourceWidth, sourceHeight);
+    await writeCanvasPngToFile(canvas, fileEntry);
+    return {
+      skipped: false,
+      sourceWidth,
+      sourceHeight,
+      outputWidth,
+      outputHeight,
+      border,
+    };
+  } catch (error) {
+    console.warn(`Unable to optimize sliced PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
+    return {
+      skipped: true,
+      reason: formatErrorMessage(error),
+      border: slicing.border,
+    };
+  }
+}
+
+function drawNineSliceRegion(context, image, border, sourceWidth, sourceHeight) {
+  const left = Math.max(0, Math.round(toNumber(border && border.left)));
+  const right = Math.max(0, Math.round(toNumber(border && border.right)));
+  const top = Math.max(0, Math.round(toNumber(border && border.top)));
+  const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
+  const centerSourceWidth = Math.max(1, sourceWidth - left - right);
+  const centerSourceHeight = Math.max(1, sourceHeight - top - bottom);
+  const centerSourceX = left;
+  const centerSourceY = top;
+  const rightSourceX = Math.max(left, sourceWidth - right);
+  const bottomSourceY = Math.max(top, sourceHeight - bottom);
+  const rightDestX = left + 1;
+  const bottomDestY = top + 1;
+
+  drawImagePart(context, image, 0, 0, left, top, 0, 0, left, top);
+  drawImagePart(context, image, centerSourceX, 0, centerSourceWidth, top, left, 0, 1, top);
+  drawImagePart(context, image, rightSourceX, 0, right, top, rightDestX, 0, right, top);
+
+  drawImagePart(context, image, 0, centerSourceY, left, centerSourceHeight, 0, top, left, 1);
+  drawImagePart(context, image, centerSourceX, centerSourceY, centerSourceWidth, centerSourceHeight, left, top, 1, 1);
+  drawImagePart(context, image, rightSourceX, centerSourceY, right, centerSourceHeight, rightDestX, top, right, 1);
+
+  drawImagePart(context, image, 0, bottomSourceY, left, bottom, 0, bottomDestY, left, bottom);
+  drawImagePart(context, image, centerSourceX, bottomSourceY, centerSourceWidth, bottom, left, bottomDestY, 1, bottom);
+  drawImagePart(context, image, rightSourceX, bottomSourceY, right, bottom, rightDestX, bottomDestY, right, bottom);
+}
+
+function drawImagePart(context, image, sx, sy, sw, sh, dx, dy, dw, dh) {
+  if (!context || !image || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) {
+    return;
+  }
+  context.drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+async function writeCanvasPngToFile(canvas, fileEntry) {
+  const binaryFormat = storage.formats && storage.formats.binary ? storage.formats.binary : null;
+  const data = await canvasToPngArrayBuffer(canvas);
+  if (binaryFormat) {
+    await fileEntry.write(data, { format: binaryFormat });
+    return;
+  }
+  throw new Error("Binary file write API unavailable");
+}
+
+async function canvasToPngArrayBuffer(canvas) {
+  if (canvas && typeof canvas.toBlob === "function") {
+    const blob = await canvasToPngBlob(canvas);
+    return blob.arrayBuffer();
+  }
+  if (canvas && typeof canvas.toDataURL === "function") {
+    return dataUrlToArrayBuffer(canvas.toDataURL("image/png"));
+  }
+  throw new Error("Canvas PNG encode API unavailable");
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error("Canvas PNG encode returned empty blob"));
+      }
+    }, "image/png");
+  });
+}
+
+function dataUrlToArrayBuffer(dataUrl) {
+  const base64 = String(dataUrl || "").replace(/^data:image\/png;base64,/, "");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
 }
 
 function buildQuickExportDestinationSpecs() {
@@ -5388,7 +5522,8 @@ async function writeCocosDirectPrefabPackage(folder, assets, imagesFolder) {
 }
 
 async function safeAnalyzePngAlphaBounds(fileEntry, asset) {
-  if (ENABLE_COCOS_FAST_TRIM_HINT && asset && asset.cocosTrimHint) {
+  const slicing = normalizeSlicingMetadata(asset);
+  if (ENABLE_COCOS_FAST_TRIM_HINT && asset && asset.cocosTrimHint && !slicing.enabled) {
     return buildTrimFallbackFromAsset(asset);
   }
 
@@ -5412,6 +5547,24 @@ async function safeAnalyzePngAlphaBounds(fileEntry, asset) {
 }
 
 function buildTrimFallbackFromAsset(asset) {
+  const slicing = normalizeSlicingMetadata(asset);
+  if (slicing.enabled) {
+    const border = slicing.border || { left: 0, right: 0, top: 0, bottom: 0 };
+    const rawWidth = Math.max(1, Math.round(toNumber(border.left)) + 1 + Math.round(toNumber(border.right)));
+    const rawHeight = Math.max(1, Math.round(toNumber(border.top)) + 1 + Math.round(toNumber(border.bottom)));
+    return {
+      rawWidth,
+      rawHeight,
+      trimX: 0,
+      trimY: 0,
+      width: rawWidth,
+      height: rawHeight,
+      offsetX: 0,
+      offsetY: 0,
+      hasVisiblePixels: null,
+    };
+  }
+
   const hint = asset && asset.cocosTrimHint ? asset.cocosTrimHint : null;
   const rawWidth = Math.max(1, Math.round(toNumber(hint ? hint.rawWidth : (asset && asset.bounds ? asset.bounds.width : 1))));
   const rawHeight = Math.max(1, Math.round(toNumber(hint ? hint.rawHeight : (asset && asset.bounds ? asset.bounds.height : 1))));
@@ -5455,6 +5608,10 @@ function isSuspiciousTinyTrimResult(trimInfo, asset) {
 }
 
 function shouldPreferAssetTrimHint(trimInfo, asset) {
+  if (normalizeSlicingMetadata(asset).enabled) {
+    return false;
+  }
+
   if (!asset || !asset.cocosTrimHint) {
     return false;
   }
