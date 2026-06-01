@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.1",
-  build: "v91",
-  stamp: "2026-05-30-09",
+  version: "1.2.2",
+  build: "v92",
+  stamp: "2026-06-01-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2379,12 +2379,18 @@ async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
     await isolateDocumentToLayerBranch(exportContext, resolved.stackPath, true);
     forceVisible(resolved.layer);
     const smartObjectPrep = await maybeConvertLayerToSmartObjectForFallback(exportDoc, item, resolved.layer, resolved.stackPath);
-    const prepareInfo = await materializeFallbackPixelsForExport(exportDoc, item, smartObjectPrep.layer || resolved.layer);
+    const prepareInfo = await materializeFallbackPixelsForExport(exportDoc, item, smartObjectPrep.layer || resolved.layer, {
+      forceBakeVisiblePixels: Boolean(smartObjectPrep.hasLayerEffects),
+      bakeReason: smartObjectPrep.hasLayerEffects ? "layer-effects" : "",
+    });
     const exportPrepareInfo = {
       ...prepareInfo,
       smartObjectConverted: Boolean(smartObjectPrep.converted),
       smartObjectError: smartObjectPrep.error || "",
       smartObjectSkipReason: smartObjectPrep.skipReason || "",
+      layerEffectsDetected: Boolean(smartObjectPrep.hasLayerEffects),
+      layerEffectsKeys: smartObjectPrep.layerEffectsKeys || [],
+      layerEffectsError: smartObjectPrep.layerEffectsError || "",
     };
 
     const cropBounds = buildCropBoundsForExport(item);
@@ -4062,12 +4068,16 @@ async function bakeVisiblePixelsForExport(doc) {
   await doc.mergeVisibleLayers();
 }
 
-async function materializeFallbackPixelsForExport(doc, item, layer) {
-  if (!shouldBakeVisiblePixelsForFallback(item)) {
+async function materializeFallbackPixelsForExport(doc, item, layer, options) {
+  const forceBakeVisiblePixels = Boolean(options && options.forceBakeVisiblePixels);
+  const bakeReason = options && options.bakeReason ? String(options.bakeReason) : "";
+
+  if (!forceBakeVisiblePixels && !shouldBakeVisiblePixelsForFallback(item)) {
     return {
       method: "none",
       success: true,
       bakedVisiblePixels: false,
+      bakeReason: "",
     };
   }
 
@@ -4076,6 +4086,7 @@ async function materializeFallbackPixelsForExport(doc, item, layer) {
     return {
       ...rasterized,
       bakedVisiblePixels: true,
+      bakeReason,
     };
   }
 
@@ -4084,6 +4095,7 @@ async function materializeFallbackPixelsForExport(doc, item, layer) {
     method: "merge-visible-layers",
     success: true,
     bakedVisiblePixels: true,
+    bakeReason,
     rasterizeError: rasterized.error || "",
   };
 }
@@ -4194,12 +4206,15 @@ function shouldRasterizeTextLayerForFallback(item) {
   return hasEffectBoundsExpansion(item.bounds, item.boundsNoEffects);
 }
 
-function getSmartObjectConversionSkipReason(item, layer) {
+function getSmartObjectConversionSkipReason(item, layer, layerEffectsInfo) {
   if (!item) {
     return "missing-item";
   }
   if (!layer) {
     return "missing-layer";
+  }
+  if (layerEffectsInfo && layerEffectsInfo.hasEffects) {
+    return "";
   }
   if (isGroupLayer(layer)) {
     return "group-layer-not-supported";
@@ -4214,13 +4229,17 @@ function getSmartObjectConversionSkipReason(item, layer) {
 }
 
 async function maybeConvertLayerToSmartObjectForFallback(doc, item, layer, stackPath) {
-  const skipReason = getSmartObjectConversionSkipReason(item, layer);
+  const layerEffectsInfo = await getLayerEffectsInfoForExport(layer);
+  const skipReason = getSmartObjectConversionSkipReason(item, layer, layerEffectsInfo);
   if (skipReason) {
     return {
       converted: false,
       layer,
       error: "",
       skipReason,
+      hasLayerEffects: Boolean(layerEffectsInfo && layerEffectsInfo.hasEffects),
+      layerEffectsKeys: layerEffectsInfo && layerEffectsInfo.keys ? layerEffectsInfo.keys : [],
+      layerEffectsError: layerEffectsInfo && layerEffectsInfo.error ? layerEffectsInfo.error : "",
     };
   }
 
@@ -4254,6 +4273,9 @@ async function maybeConvertLayerToSmartObjectForFallback(doc, item, layer, stack
       layer: convertedLayer,
       error: "",
       skipReason: "",
+      hasLayerEffects: Boolean(layerEffectsInfo && layerEffectsInfo.hasEffects),
+      layerEffectsKeys: layerEffectsInfo && layerEffectsInfo.keys ? layerEffectsInfo.keys : [],
+      layerEffectsError: layerEffectsInfo && layerEffectsInfo.error ? layerEffectsInfo.error : "",
     };
   } catch (error) {
     console.warn(`Unable to convert layer to smart object before fallback export: ${item && item.exportName ? item.exportName : "unknown"}`, error);
@@ -4262,8 +4284,100 @@ async function maybeConvertLayerToSmartObjectForFallback(doc, item, layer, stack
       layer,
       error: formatErrorMessage(error),
       skipReason: "",
+      hasLayerEffects: Boolean(layerEffectsInfo && layerEffectsInfo.hasEffects),
+      layerEffectsKeys: layerEffectsInfo && layerEffectsInfo.keys ? layerEffectsInfo.keys : [],
+      layerEffectsError: layerEffectsInfo && layerEffectsInfo.error ? layerEffectsInfo.error : "",
     };
   }
+}
+
+async function getLayerEffectsInfoForExport(layer) {
+  if (!layer || typeof layer.id !== "number") {
+    return {
+      hasEffects: false,
+      keys: [],
+      error: "missing-layer",
+    };
+  }
+
+  try {
+    const { batchPlay } = require("photoshop").action;
+    const result = await batchPlay(
+      [
+        {
+          _obj: "get",
+          _target: [
+            { _property: "layerEffects" },
+            { _ref: "layer", _id: layer.id },
+          ],
+          _options: { dialogOptions: "dontDisplay" },
+        },
+      ],
+      {
+        synchronousExecution: true,
+        modalBehavior: "execute",
+      }
+    );
+    const descriptor = result && result[0] ? result[0].layerEffects : null;
+    const keys = collectEnabledLayerEffectKeys(descriptor);
+    return {
+      hasEffects: keys.length > 0,
+      keys,
+      error: "",
+    };
+  } catch (error) {
+    return {
+      hasEffects: false,
+      keys: [],
+      error: formatErrorMessage(error),
+    };
+  }
+}
+
+function collectEnabledLayerEffectKeys(layerEffects) {
+  if (!layerEffects || typeof layerEffects !== "object") {
+    return [];
+  }
+
+  if (layerEffects.masterFXSwitch === false) {
+    return [];
+  }
+
+  return Object.keys(layerEffects).filter((key) => {
+    if (key === "_obj" || key === "scale" || key === "masterFXSwitch") {
+      return false;
+    }
+    return isEnabledLayerEffectValue(layerEffects[key]);
+  });
+}
+
+function isEnabledLayerEffectValue(value) {
+  if (!value) {
+    return false;
+  }
+
+  if (Array.isArray(value)) {
+    return value.some((entry) => isEnabledLayerEffectValue(entry));
+  }
+
+  if (typeof value !== "object") {
+    return false;
+  }
+
+  if (value.enabled === false || value.present === false) {
+    return false;
+  }
+
+  if (value.enabled === true || value.present === true) {
+    return true;
+  }
+
+  return Object.keys(value).some((key) => {
+    if (key === "_obj" || key === "mode" || key === "color" || key === "opacity") {
+      return false;
+    }
+    return isEnabledLayerEffectValue(value[key]);
+  });
 }
 
 function shouldBakeVisiblePixelsForItem(item) {
