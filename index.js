@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.4",
-  build: "v94",
-  stamp: "2026-06-01-03",
+  version: "1.2.5",
+  build: "v95",
+  stamp: "2026-06-01-04",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1577,6 +1577,8 @@ async function runExport() {
 
     for (let batchStart = 0; batchStart < state.candidates.length; batchStart += EXPORT_MODAL_BATCH_SIZE) {
       const batchEnd = Math.min(state.candidates.length, batchStart + EXPORT_MODAL_BATCH_SIZE);
+      const batchOutputs = [];
+      const batchOutputByIndex = new Map();
       await core.executeAsModal(async () => {
         for (let index = batchStart; index < batchEnd; index += 1) {
           const item = state.candidates[index];
@@ -1585,13 +1587,26 @@ async function runExport() {
           const fileFolder = await ensureNestedFolders(imagesFolder, item.exportFolderSegments);
           const file = await fileFolder.createFile(`${item.exportName}.png`, { overwrite: true });
           const exportDebug = await exportLayerAsPng(doc, item, file, imagesFolder);
-          const slicedOptimizeInfo = await postprocessSlicedPngOutput(file, item);
-          if (slicedOptimizeInfo) {
-            exportDebug.slicedOptimize = slicedOptimizeInfo;
-          }
-          results.push(makeMetadataRecord(item, exportDebug));
+          batchOutputByIndex.set(index, { item, file, exportDebug, index });
         }
       }, { commandName: `PSD Export Pipeline ${batchStart + 1}-${batchEnd}` });
+
+      for (let index = batchStart; index < batchEnd; index += 1) {
+        const output = batchOutputByIndex.get(index);
+        if (output) {
+          batchOutputs.push(output);
+        }
+      }
+
+      for (const output of batchOutputs) {
+        const relativeImagePath = buildRelativeAssetImagePath(output.item);
+        setStatus(`正在處理切片 ${output.index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
+        const slicedOptimizeInfo = await postprocessSlicedPngOutput(output.file, output.item);
+        if (slicedOptimizeInfo) {
+          output.exportDebug.slicedOptimize = slicedOptimizeInfo;
+        }
+        results.push(makeMetadataRecord(output.item, output.exportDebug));
+      }
 
       if (batchEnd < state.candidates.length) {
         await delay(EXPORT_MODAL_BATCH_COOLDOWN_MS);
