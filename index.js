@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.7",
-  build: "v97",
-  stamp: "2026-06-02-01",
+  version: "1.2.8",
+  build: "v98",
+  stamp: "2026-06-02-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1584,6 +1584,7 @@ async function runExport() {
           const item = state.candidates[index];
           const relativeImagePath = buildRelativeAssetImagePath(item);
           setStatus(`正在匯出 ${index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
+          await enrichSlicingMetadataForItem(item);
           const fileFolder = await ensureNestedFolders(imagesFolder, item.exportFolderSegments);
           const file = await fileFolder.createFile(`${item.exportName}.png`, { overwrite: true });
           const exportDebug = await exportLayerAsPng(doc, item, file, imagesFolder);
@@ -4836,6 +4837,7 @@ function makeMetadataRecord(item, exportDebug) {
     emptySource: Boolean(item.emptySource),
     renderProfile: item.renderProfile || buildLayerRenderProfile(item.layer),
     slicing,
+    slicingDescriptorDebug: item.slicingDescriptorDebug || null,
     exportDebug: exportDebug || null,
     stackPath: item.stackPath,
     bounds: item.bounds,
@@ -4880,17 +4882,31 @@ function buildSlicingMetadata(item) {
     return disabled;
   }
 
+  if (item.slicingOverride && item.slicingOverride.enabled) {
+    return {
+      ...item.slicingOverride,
+      border: normalizeSliceBorder(item.slicingOverride.border || {}, item.bounds.width, item.bounds.height),
+    };
+  }
+
   const label = [
     item.sourceName,
     item.sourcePath,
     item.sanitizedSourcePath,
     item.exportName,
   ].filter(Boolean).join(" ");
+  return parseSlicingMetadataFromLabel(label, item) || disabled;
+}
+
+function parseSlicingMetadataFromLabel(label, item) {
+  const disabled = null;
   if (/\[(?:no-?slice|simple)\]/i.test(label)) {
     return {
-      ...disabled,
+      enabled: false,
+      type: "simple",
       source: "name-marker",
       marker: "simple",
+      border: { left: 0, right: 0, top: 0, bottom: 0 },
     };
   }
 
@@ -4925,6 +4941,108 @@ function buildSlicingMetadata(item) {
     marker: markerMatch ? markerMatch[0] : "sliced",
     border: normalizeSliceBorder(border, width, height),
   };
+}
+
+async function enrichSlicingMetadataForItem(item) {
+  if (!item || !item.bounds) {
+    return null;
+  }
+
+  const existing = buildSlicingMetadata(item);
+  if (existing.enabled || (existing.marker && existing.marker === "simple")) {
+    item.slicingOverride = existing;
+    return existing;
+  }
+
+  const descriptorInfo = await getLayerDescriptorSlicingMetadata(item);
+  if (descriptorInfo && descriptorInfo.enabled) {
+    item.slicingOverride = descriptorInfo;
+    return descriptorInfo;
+  }
+
+  item.slicingDescriptorDebug = descriptorInfo || null;
+  return existing;
+}
+
+async function getLayerDescriptorSlicingMetadata(item) {
+  if (!item || typeof item.id !== "number") {
+    return null;
+  }
+
+  try {
+    const { batchPlay } = require("photoshop").action;
+    const result = await batchPlay(
+      [
+        {
+          _obj: "get",
+          _target: [{ _ref: "layer", _id: item.id }],
+          _options: { dialogOptions: "dontDisplay" },
+        },
+      ],
+      {
+        synchronousExecution: true,
+        modalBehavior: "execute",
+      }
+    );
+    const descriptor = result && result[0] ? result[0] : null;
+    const strings = collectDescriptorStrings(descriptor, 0, []);
+    for (const text of strings) {
+      const parsed = parseSlicingMetadataFromLabel(text, item);
+      if (parsed && parsed.enabled) {
+        return {
+          ...parsed,
+          source: `layer-descriptor:${parsed.source || "marker"}`,
+          descriptorMatch: text,
+        };
+      }
+    }
+    return {
+      enabled: false,
+      type: "simple",
+      source: "layer-descriptor",
+      marker: "",
+      border: { left: 0, right: 0, top: 0, bottom: 0 },
+      sampledStrings: strings.slice(0, 12),
+    };
+  } catch (error) {
+    return {
+      enabled: false,
+      type: "simple",
+      source: "layer-descriptor",
+      marker: "",
+      border: { left: 0, right: 0, top: 0, bottom: 0 },
+      error: formatErrorMessage(error),
+    };
+  }
+}
+
+function collectDescriptorStrings(value, depth, result) {
+  if (!result) {
+    result = [];
+  }
+  if (depth > 8 || result.length > 200) {
+    return result;
+  }
+  if (typeof value === "string") {
+    if (value.trim()) {
+      result.push(value);
+    }
+    return result;
+  }
+  if (!value || typeof value !== "object") {
+    return result;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectDescriptorStrings(item, depth + 1, result));
+    return result;
+  }
+  Object.keys(value).forEach((key) => {
+    if (typeof key === "string" && key.trim()) {
+      result.push(key);
+    }
+    collectDescriptorStrings(value[key], depth + 1, result);
+  });
+  return Array.from(new Set(result));
 }
 
 function normalizeSliceBorder(border, width, height) {
