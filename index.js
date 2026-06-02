@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.8",
-  build: "v98",
-  stamp: "2026-06-02-02",
+  version: "1.2.9",
+  build: "v99",
+  stamp: "2026-06-02-03",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1585,6 +1585,7 @@ async function runExport() {
           const relativeImagePath = buildRelativeAssetImagePath(item);
           setStatus(`正在匯出 ${index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
           await enrichSlicingMetadataForItem(item);
+          await enrichMirroringMetadataForItem(item);
           const fileFolder = await ensureNestedFolders(imagesFolder, item.exportFolderSegments);
           const file = await fileFolder.createFile(`${item.exportName}.png`, { overwrite: true });
           const exportDebug = await exportLayerAsPng(doc, item, file, imagesFolder);
@@ -1602,7 +1603,9 @@ async function runExport() {
       for (const output of batchOutputs) {
         const relativeImagePath = buildRelativeAssetImagePath(output.item);
         setStatus(`正在處理切片 ${output.index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
-        if (output.exportDebug && output.exportDebug.slicedNativeExport && output.exportDebug.slicedNativeExport.applied) {
+        if (output.exportDebug && output.exportDebug.mirroredNativeExport && output.exportDebug.mirroredNativeExport.applied) {
+          output.exportDebug.mirroredOptimize = output.exportDebug.mirroredNativeExport;
+        } else if (output.exportDebug && output.exportDebug.slicedNativeExport && output.exportDebug.slicedNativeExport.applied) {
           output.exportDebug.slicedOptimize = output.exportDebug.slicedNativeExport;
         } else {
           const slicedOptimizeInfo = await postprocessSlicedPngOutput(output.file, output.item);
@@ -2423,8 +2426,14 @@ async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
     }
 
     const saveOptions = buildPngSaveOptionsForFallback();
-    const slicedNativeExport = await trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc);
-    if (!slicedNativeExport || !slicedNativeExport.applied) {
+    const mirroredNativeExport = await trySaveMirroredExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc);
+    if (mirroredNativeExport && !mirroredNativeExport.applied) {
+      item.mirroringExportDisabled = true;
+    }
+    const slicedNativeExport = mirroredNativeExport && mirroredNativeExport.applied
+      ? null
+      : await trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc);
+    if ((!mirroredNativeExport || !mirroredNativeExport.applied) && (!slicedNativeExport || !slicedNativeExport.applied)) {
       await exportDoc.saveAs.png(outputFile, saveOptions, true);
     }
     const optimizeInfo = await slimPngFileLossless(outputFile);
@@ -2438,6 +2447,7 @@ async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
       prepareInfo: exportPrepareInfo,
       fallbackBounds: cropBounds || null,
       outputOptimize: optimizeInfo,
+      mirroredNativeExport: mirroredNativeExport || null,
       slicedNativeExport: slicedNativeExport || null,
     };
   } catch (error) {
@@ -2471,6 +2481,127 @@ function buildPngSaveOptionsForFallback() {
     }
   }
   return options;
+}
+
+async function trySaveMirroredExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc) {
+  const mirroring = buildMirroringMetadata(item);
+  if (!mirroring.enabled) {
+    return null;
+  }
+  if (!exportDoc || !outputFile) {
+    return {
+      applied: false,
+      skipped: true,
+      reason: "missing-export-document",
+      axis: mirroring.axis,
+      retained: mirroring.retained,
+    };
+  }
+
+  let compactDoc = null;
+  let sourceImageData = null;
+  let targetImageData = null;
+  try {
+    const imaging = require("photoshop").imaging;
+    if (!imaging || typeof imaging.getPixels !== "function" || typeof imaging.createImageDataFromBuffer !== "function" || typeof imaging.putPixels !== "function") {
+      throw new Error("Photoshop Imaging API unavailable");
+    }
+
+    const sourceWidth = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.width : exportDoc.width)));
+    const sourceHeight = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.height : exportDoc.height)));
+    const outputWidth = mirroring.axis === "y" ? sourceWidth : Math.max(1, Math.ceil(sourceWidth / 2));
+    const outputHeight = mirroring.axis === "y" ? Math.max(1, Math.ceil(sourceHeight / 2)) : sourceHeight;
+    if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
+      return {
+        applied: false,
+        skipped: true,
+        reason: "already-minimal",
+        sourceWidth,
+        sourceHeight,
+        outputWidth,
+        outputHeight,
+        axis: mirroring.axis,
+        retained: mirroring.retained,
+      };
+    }
+
+    const sourcePixels = await imaging.getPixels({
+      documentID: exportDoc.id,
+      sourceBounds: { left: 0, top: 0, width: sourceWidth, height: sourceHeight },
+      colorSpace: "RGB",
+      componentSize: 8,
+    });
+    sourceImageData = sourcePixels && sourcePixels.imageData;
+    if (!sourceImageData || typeof sourceImageData.getData !== "function") {
+      throw new Error("Imaging getPixels returned no image data");
+    }
+
+    const sourceBuffer = await buildFullRgbaBufferFromImagingResult(sourcePixels, sourceWidth, sourceHeight);
+    const compactBuffer = buildCompactMirroredRgbaBuffer(sourceBuffer, sourceWidth, sourceHeight, mirroring);
+    targetImageData = await imaging.createImageDataFromBuffer(compactBuffer, {
+      width: outputWidth,
+      height: outputHeight,
+      components: 4,
+      chunky: true,
+      colorSpace: "RGB",
+      colorProfile: sourceImageData.colorProfile || "",
+    });
+
+    compactDoc = await app.documents.add({
+      width: outputWidth,
+      height: outputHeight,
+      resolution: Math.max(1, roundNumber(toNumber(sourceDoc && sourceDoc.resolution) || toNumber(exportDoc.resolution) || 72)),
+      mode: "RGBColorMode",
+      fill: "transparent",
+      name: `mirror_${sanitizeFileStem(item && item.exportName ? item.exportName : "layer")}`,
+    });
+    const targetLayer = toArray(compactDoc && compactDoc.activeLayers)[0] || toArray(compactDoc && compactDoc.layers)[0];
+    if (!targetLayer || typeof targetLayer.id !== "number") {
+      throw new Error("Unable to resolve target pixel layer for mirrored output");
+    }
+
+    await imaging.putPixels({
+      documentID: compactDoc.id,
+      layerID: targetLayer.id,
+      imageData: targetImageData,
+      replace: true,
+      targetBounds: { left: 0, top: 0 },
+      commandName: "PSD Export mirrored PNG",
+    });
+    await compactDoc.saveAs.png(outputFile, buildPngSaveOptionsForFallback(), true);
+
+    return {
+      applied: true,
+      skipped: false,
+      method: "photoshop-imaging",
+      sourceWidth,
+      sourceHeight,
+      outputWidth,
+      outputHeight,
+      axis: mirroring.axis,
+      retained: mirroring.retained,
+    };
+  } catch (error) {
+    console.warn(`Unable to create native mirrored PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
+    return {
+      applied: false,
+      skipped: true,
+      method: "photoshop-imaging",
+      reason: formatErrorMessage(error),
+      axis: mirroring.axis,
+      retained: mirroring.retained,
+    };
+  } finally {
+    if (targetImageData && typeof targetImageData.dispose === "function") {
+      targetImageData.dispose();
+    }
+    if (sourceImageData && typeof sourceImageData.dispose === "function") {
+      sourceImageData.dispose();
+    }
+    if (compactDoc) {
+      await closeDocumentWithoutSaving(compactDoc);
+    }
+  }
 }
 
 async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc) {
@@ -2642,6 +2773,26 @@ function buildCompactSlicedRgbaBuffer(source, sourceWidth, sourceHeight, border)
       copyRgbaPixel(source, sourceWidth, sourceX, sourceY, output, outputWidth, x, y);
     }
   }
+  return output;
+}
+
+function buildCompactMirroredRgbaBuffer(source, sourceWidth, sourceHeight, mirroring) {
+  const axis = mirroring && mirroring.axis === "y" ? "y" : "x";
+  const retained = normalizeMirrorRetained(axis, mirroring && mirroring.retained);
+  const outputWidth = axis === "y" ? sourceWidth : Math.max(1, Math.ceil(sourceWidth / 2));
+  const outputHeight = axis === "y" ? Math.max(1, Math.ceil(sourceHeight / 2)) : sourceHeight;
+  const output = new Uint8Array(outputWidth * outputHeight * 4);
+  const startX = axis === "x" && retained === "right" ? Math.max(0, sourceWidth - outputWidth) : 0;
+  const startY = axis === "y" && retained === "bottom" ? Math.max(0, sourceHeight - outputHeight) : 0;
+
+  for (let y = 0; y < outputHeight; y += 1) {
+    for (let x = 0; x < outputWidth; x += 1) {
+      const sourceX = clampNumber(startX + x, 0, Math.max(0, sourceWidth - 1));
+      const sourceY = clampNumber(startY + y, 0, Math.max(0, sourceHeight - 1));
+      copyRgbaPixel(source, sourceWidth, sourceX, sourceY, output, outputWidth, x, y);
+    }
+  }
+
   return output;
 }
 
@@ -4816,7 +4967,8 @@ function forceVisible(layer) {
 
 function makeMetadataRecord(item, exportDebug) {
   const slicing = buildSlicingMetadata(item);
-  const cocosContentSize = slicing.enabled
+  const mirroring = buildMirroringMetadata(item);
+  const cocosContentSize = slicing.enabled || mirroring.enabled
     ? { width: item.bounds.width, height: item.bounds.height }
     : item.cocosTrimHint
     ? { width: item.cocosTrimHint.width, height: item.cocosTrimHint.height }
@@ -4837,7 +4989,9 @@ function makeMetadataRecord(item, exportDebug) {
     emptySource: Boolean(item.emptySource),
     renderProfile: item.renderProfile || buildLayerRenderProfile(item.layer),
     slicing,
+    mirroring,
     slicingDescriptorDebug: item.slicingDescriptorDebug || null,
+    mirroringDescriptorDebug: item.mirroringDescriptorDebug || null,
     exportDebug: exportDebug || null,
     stackPath: item.stackPath,
     bounds: item.bounds,
@@ -4851,15 +5005,17 @@ function makeMetadataRecord(item, exportDebug) {
       anchor: "center",
       anchoredPosition: item.position.unity,
       sizeDelta: { x: item.bounds.width, y: item.bounds.height },
-      imageType: slicing.enabled ? "sliced" : "simple",
+      imageType: slicing.enabled && !mirroring.enabled ? "sliced" : "simple",
       border: slicing.border,
+      mirroring,
     },
     cocos: {
       anchor: "center",
       position: item.position.cocos,
       contentSize: cocosContentSize,
-      spriteType: slicing.enabled ? "sliced" : "simple",
+      spriteType: slicing.enabled && !mirroring.enabled ? "sliced" : "simple",
       border: slicing.border,
+      mirroring,
     },
     spine: {
       slotName: item.exportName,
@@ -4896,6 +5052,79 @@ function buildSlicingMetadata(item) {
     item.exportName,
   ].filter(Boolean).join(" ");
   return parseSlicingMetadataFromLabel(label, item) || disabled;
+}
+
+function buildMirroringMetadata(item) {
+  const disabled = {
+    enabled: false,
+    type: "simple",
+    source: "none",
+    marker: "",
+    axis: "x",
+    retained: "left",
+  };
+  if (!item || !item.bounds) {
+    return disabled;
+  }
+
+  if (item.mirroringExportDisabled) {
+    return {
+      ...disabled,
+      source: "export-fallback",
+      marker: "mirror-export-disabled",
+    };
+  }
+
+  if (item.mirroringOverride && item.mirroringOverride.enabled) {
+    return normalizeMirroringMetadata({ ...item, mirroring: item.mirroringOverride });
+  }
+
+  const label = [
+    item.sourceName,
+    item.sourcePath,
+    item.sanitizedSourcePath,
+    item.exportName,
+  ].filter(Boolean).join(" ");
+  return parseMirroringMetadataFromLabel(label, item) || disabled;
+}
+
+function parseMirroringMetadataFromLabel(label, item) {
+  if (/\[(?:no-?mirror|mirror-?off|simple)\]/i.test(label)) {
+    return {
+      enabled: false,
+      type: "simple",
+      source: "name-marker",
+      marker: "simple",
+      axis: "x",
+      retained: "left",
+    };
+  }
+
+  const markerMatch = label.match(/\[(?:mirror|mirrored|flip|symmetry|sym)\s*(?::|=)?\s*([^\]]*)\]/i);
+  const hasMarker = Boolean(markerMatch || /(?:^|[\s_\-[/(])(?:mirror|mirrored|flip|symmetry|sym)(?:$|[\s_\-\]/):=])|鏡射|镜射|對稱|对称/i.test(label));
+  if (!hasMarker) {
+    return null;
+  }
+
+  const markerValue = markerMatch ? String(markerMatch[1] || "").trim().toLowerCase() : "";
+  let axis = "x";
+  let retained = "left";
+  if (/^(?:y|v|vertical|top|bottom|up|down|t|b)$/i.test(markerValue)) {
+    axis = "y";
+    retained = /(?:bottom|down|b)$/i.test(markerValue) ? "bottom" : "top";
+  } else if (/^(?:x|h|horizontal|left|right|l|r)?$/i.test(markerValue)) {
+    axis = "x";
+    retained = /(?:right|r)$/i.test(markerValue) ? "right" : "left";
+  }
+
+  return {
+    enabled: true,
+    type: "mirrored",
+    source: markerMatch ? "name-marker-explicit" : "name-marker-default",
+    marker: markerMatch ? markerMatch[0] : "mirror",
+    axis,
+    retained: normalizeMirrorRetained(axis, retained),
+  };
 }
 
 function parseSlicingMetadataFromLabel(label, item) {
@@ -4964,6 +5193,27 @@ async function enrichSlicingMetadataForItem(item) {
   return existing;
 }
 
+async function enrichMirroringMetadataForItem(item) {
+  if (!item || !item.bounds) {
+    return null;
+  }
+
+  const existing = buildMirroringMetadata(item);
+  if (existing.enabled || (existing.marker && existing.marker === "simple")) {
+    item.mirroringOverride = existing;
+    return existing;
+  }
+
+  const descriptorInfo = await getLayerDescriptorMirroringMetadata(item);
+  if (descriptorInfo && descriptorInfo.enabled) {
+    item.mirroringOverride = descriptorInfo;
+    return descriptorInfo;
+  }
+
+  item.mirroringDescriptorDebug = descriptorInfo || null;
+  return existing;
+}
+
 async function getLayerDescriptorSlicingMetadata(item) {
   if (!item || typeof item.id !== "number") {
     return null;
@@ -5011,6 +5261,60 @@ async function getLayerDescriptorSlicingMetadata(item) {
       source: "layer-descriptor",
       marker: "",
       border: { left: 0, right: 0, top: 0, bottom: 0 },
+      error: formatErrorMessage(error),
+    };
+  }
+}
+
+async function getLayerDescriptorMirroringMetadata(item) {
+  if (!item || typeof item.id !== "number") {
+    return null;
+  }
+
+  try {
+    const { batchPlay } = require("photoshop").action;
+    const result = await batchPlay(
+      [
+        {
+          _obj: "get",
+          _target: [{ _ref: "layer", _id: item.id }],
+          _options: { dialogOptions: "dontDisplay" },
+        },
+      ],
+      {
+        synchronousExecution: true,
+        modalBehavior: "execute",
+      }
+    );
+    const descriptor = result && result[0] ? result[0] : null;
+    const strings = collectDescriptorStrings(descriptor, 0, []);
+    for (const text of strings) {
+      const parsed = parseMirroringMetadataFromLabel(text, item);
+      if (parsed && parsed.enabled) {
+        return {
+          ...parsed,
+          source: `layer-descriptor:${parsed.source || "marker"}`,
+          descriptorMatch: text,
+        };
+      }
+    }
+    return {
+      enabled: false,
+      type: "simple",
+      source: "layer-descriptor",
+      marker: "",
+      axis: "x",
+      retained: "left",
+      sampledStrings: strings.slice(0, 12),
+    };
+  } catch (error) {
+    return {
+      enabled: false,
+      type: "simple",
+      source: "layer-descriptor",
+      marker: "",
+      axis: "x",
+      retained: "left",
       error: formatErrorMessage(error),
     };
   }
@@ -5076,6 +5380,83 @@ function normalizeSlicingMetadata(asset) {
     marker: slicing.marker || "",
     border: normalizeSliceBorder(slicing.border || {}, width, height),
   };
+}
+
+function normalizeMirroringMetadata(asset) {
+  const mirroring = asset && asset.mirroring ? asset.mirroring : null;
+  if (!mirroring || !mirroring.enabled) {
+    return {
+      enabled: false,
+      type: "simple",
+      axis: "x",
+      retained: "left",
+    };
+  }
+
+  const axis = mirroring.axis === "y" ? "y" : "x";
+  return {
+    enabled: true,
+    type: "mirrored",
+    source: mirroring.source || "",
+    marker: mirroring.marker || "",
+    axis,
+    retained: normalizeMirrorRetained(axis, mirroring.retained),
+  };
+}
+
+function normalizeMirrorRetained(axis, retained) {
+  const value = String(retained || "").trim().toLowerCase();
+  if (axis === "y") {
+    return value === "bottom" ? "bottom" : "top";
+  }
+  return value === "right" ? "right" : "left";
+}
+
+function getMirroredTextureSize(asset) {
+  const mirroring = normalizeMirroringMetadata(asset);
+  const width = Math.max(1, Math.round(toNumber(asset && asset.bounds ? asset.bounds.width : asset && asset.width)));
+  const height = Math.max(1, Math.round(toNumber(asset && asset.bounds ? asset.bounds.height : asset && asset.height)));
+  if (!mirroring.enabled) {
+    return { width, height };
+  }
+  return mirroring.axis === "y"
+    ? { width, height: Math.max(1, Math.ceil(height / 2)) }
+    : { width: Math.max(1, Math.ceil(width / 2)), height };
+}
+
+function buildMirrorPartLayouts(asset, contentSize) {
+  const mirroring = normalizeMirroringMetadata(asset);
+  const width = Math.max(1, roundNumber(toNumber(contentSize && contentSize.width)));
+  const height = Math.max(1, roundNumber(toNumber(contentSize && contentSize.height)));
+  if (!mirroring.enabled) {
+    return [];
+  }
+
+  if (mirroring.axis === "y") {
+    const halfHeight = roundNumber(height / 2);
+    if (mirroring.retained === "bottom") {
+      return [
+        { suffix: "mirror", x: 0, y: height / 4, scaleX: 1, scaleY: -1, width, height: halfHeight },
+        { suffix: "source", x: 0, y: -height / 4, scaleX: 1, scaleY: 1, width, height: halfHeight },
+      ];
+    }
+    return [
+      { suffix: "source", x: 0, y: height / 4, scaleX: 1, scaleY: 1, width, height: halfHeight },
+      { suffix: "mirror", x: 0, y: -height / 4, scaleX: 1, scaleY: -1, width, height: halfHeight },
+    ];
+  }
+
+  const halfWidth = roundNumber(width / 2);
+  if (mirroring.retained === "right") {
+    return [
+      { suffix: "mirror", x: -width / 4, y: 0, scaleX: -1, scaleY: 1, width: halfWidth, height },
+      { suffix: "source", x: width / 4, y: 0, scaleX: 1, scaleY: 1, width: halfWidth, height },
+    ];
+  }
+  return [
+    { suffix: "source", x: -width / 4, y: 0, scaleX: 1, scaleY: 1, width: halfWidth, height },
+    { suffix: "mirror", x: width / 4, y: 0, scaleX: -1, scaleY: 1, width: halfWidth, height },
+  ];
 }
 
 async function writeMetadataFile(metadataFolder, assets) {
@@ -5856,7 +6237,8 @@ async function writeCocosDirectPrefabPackage(folder, assets, imagesFolder) {
 
 async function safeAnalyzePngAlphaBounds(fileEntry, asset) {
   const slicing = normalizeSlicingMetadata(asset);
-  if (ENABLE_COCOS_FAST_TRIM_HINT && asset && asset.cocosTrimHint && !slicing.enabled) {
+  const mirroring = normalizeMirroringMetadata(asset);
+  if (ENABLE_COCOS_FAST_TRIM_HINT && asset && asset.cocosTrimHint && !slicing.enabled && !mirroring.enabled) {
     return buildTrimFallbackFromAsset(asset);
   }
 
@@ -5881,6 +6263,23 @@ async function safeAnalyzePngAlphaBounds(fileEntry, asset) {
 
 function buildTrimFallbackFromAsset(asset) {
   const slicing = normalizeSlicingMetadata(asset);
+  const mirroring = normalizeMirroringMetadata(asset);
+  if (mirroring.enabled) {
+    const textureSize = getMirroredTextureSize(asset);
+    const rawWidth = Math.max(1, Math.round(toNumber(textureSize.width)));
+    const rawHeight = Math.max(1, Math.round(toNumber(textureSize.height)));
+    return {
+      rawWidth,
+      rawHeight,
+      trimX: 0,
+      trimY: 0,
+      width: rawWidth,
+      height: rawHeight,
+      offsetX: 0,
+      offsetY: 0,
+      hasVisiblePixels: null,
+    };
+  }
   if (slicing.enabled) {
     const border = slicing.border || { left: 0, right: 0, top: 0, bottom: 0 };
     const rawWidth = Math.max(1, Math.round(toNumber(border.left)) + 1 + Math.round(toNumber(border.right)));
@@ -6383,6 +6782,7 @@ function buildCocosDirectPrefabDocument(assets, rootFolderName, prefabFileName, 
     const spriteCompIndex = nodeIndex + 4;
     const prefabInfoIndex = nodeIndex + 5;
     const slicing = normalizeSlicingMetadata(asset);
+    const mirroring = normalizeMirroringMetadata(asset);
     const cocosLayout = asset && asset.cocos ? asset.cocos : {};
     const cocosContentSize = cocosLayout && cocosLayout.contentSize ? cocosLayout.contentSize : null;
     const contentSize = {
@@ -6390,6 +6790,19 @@ function buildCocosDirectPrefabDocument(assets, rootFolderName, prefabFileName, 
       height: Math.max(1, roundNumber(toNumber(cocosContentSize && cocosContentSize.height ? cocosContentSize.height : (asset && asset.bounds ? asset.bounds.height : trimInfo.rawHeight)))),
     };
     const position = asset.cocos && asset.cocos.position ? asset.cocos.position : { x: 0, y: 0 };
+
+    if (mirroring.enabled) {
+      appendCocosMirroredAssetRecords(records, {
+        asset,
+        rootFolderName,
+        rootNodeIndex,
+        uiRootNodeIndex,
+        spriteMeta,
+        contentSize,
+        position,
+      });
+      return;
+    }
 
     records[uiRootNodeIndex]._children.push({ __id__: nodeIndex });
     records.push({
@@ -6529,6 +6942,135 @@ function makeCocosPrefabInfo(rootNodeIndex, fileId, rootTail = false) {
   return payload;
 }
 
+function appendCocosMirroredAssetRecords(records, context) {
+  const asset = context.asset;
+  const rootFolderName = context.rootFolderName;
+  const rootNodeIndex = context.rootNodeIndex;
+  const uiRootNodeIndex = context.uiRootNodeIndex;
+  const spriteMeta = context.spriteMeta;
+  const contentSize = context.contentSize;
+  const position = context.position || { x: 0, y: 0 };
+  const parentNodeIndex = records.length;
+  const parentTransformIndex = parentNodeIndex + 1;
+  const parentTransformCompIndex = parentNodeIndex + 2;
+  const parentPrefabInfoIndex = parentNodeIndex + 3;
+  const parts = buildMirrorPartLayouts(asset, contentSize);
+  const firstPartNodeIndex = parentNodeIndex + 4;
+
+  records[uiRootNodeIndex]._children.push({ __id__: parentNodeIndex });
+  records.push({
+    __type__: "cc.Node",
+    _name: asset.name,
+    _objFlags: 0,
+    __editorExtras__: {},
+    _parent: { __id__: uiRootNodeIndex },
+    _children: parts.map((part, index) => ({ __id__: firstPartNodeIndex + index * 6 })),
+    _active: true,
+    _components: [{ __id__: parentTransformIndex }],
+    _prefab: { __id__: parentPrefabInfoIndex },
+    _lpos: makeCocosVec3(position.x || 0, position.y || 0, 0),
+    _lrot: makeCocosQuat(),
+    _lscale: makeCocosVec3(1, 1, 1),
+    _mobility: 0,
+    _layer: 1073741824,
+    _euler: makeCocosVec3(0, 0, 0),
+    _id: "",
+  });
+  records.push({
+    __type__: "cc.UITransform",
+    _name: "",
+    _objFlags: 0,
+    __editorExtras__: {},
+    node: { __id__: parentNodeIndex },
+    _enabled: true,
+    __prefab: { __id__: parentTransformCompIndex },
+    _contentSize: makeCocosSize(contentSize.width, contentSize.height),
+    _anchorPoint: makeCocosVec2(0.5, 0.5),
+    _id: "",
+  });
+  records.push({
+    __type__: "cc.CompPrefabInfo",
+    fileId: stableFileId(`cocos:prefab:${rootFolderName}:${asset.name}:mirror-parent-transform`),
+  });
+  records.push(makeCocosPrefabInfo(rootNodeIndex, stableFileId(`cocos:prefab:${rootFolderName}:${asset.name}:mirror-parent-prefab-info`)));
+
+  parts.forEach((part) => {
+    const childNodeIndex = records.length;
+    const childTransformIndex = childNodeIndex + 1;
+    const childTransformCompIndex = childNodeIndex + 2;
+    const childSpriteIndex = childNodeIndex + 3;
+    const childSpriteCompIndex = childNodeIndex + 4;
+    const childPrefabInfoIndex = childNodeIndex + 5;
+    const partKey = `${asset.name}:${part.suffix}`;
+    records.push({
+      __type__: "cc.Node",
+      _name: `${asset.name}__${part.suffix}`,
+      _objFlags: 0,
+      __editorExtras__: {},
+      _parent: { __id__: parentNodeIndex },
+      _children: [],
+      _active: true,
+      _components: [{ __id__: childTransformIndex }, { __id__: childSpriteIndex }],
+      _prefab: { __id__: childPrefabInfoIndex },
+      _lpos: makeCocosVec3(part.x || 0, part.y || 0, 0),
+      _lrot: makeCocosQuat(),
+      _lscale: makeCocosVec3(part.scaleX || 1, part.scaleY || 1, 1),
+      _mobility: 0,
+      _layer: 1073741824,
+      _euler: makeCocosVec3(0, 0, 0),
+      _id: "",
+    });
+    records.push({
+      __type__: "cc.UITransform",
+      _name: "",
+      _objFlags: 0,
+      __editorExtras__: {},
+      node: { __id__: childNodeIndex },
+      _enabled: true,
+      __prefab: { __id__: childTransformCompIndex },
+      _contentSize: makeCocosSize(part.width, part.height),
+      _anchorPoint: makeCocosVec2(0.5, 0.5),
+      _id: "",
+    });
+    records.push({
+      __type__: "cc.CompPrefabInfo",
+      fileId: stableFileId(`cocos:prefab:${rootFolderName}:${partKey}:transform`),
+    });
+    records.push({
+      __type__: "cc.Sprite",
+      _name: "",
+      _objFlags: 0,
+      __editorExtras__: {},
+      node: { __id__: childNodeIndex },
+      _enabled: true,
+      __prefab: { __id__: childSpriteCompIndex },
+      _customMaterial: null,
+      _srcBlendFactor: 2,
+      _dstBlendFactor: 4,
+      _color: makeCocosColor(),
+      _spriteFrame: {
+        __uuid__: `${spriteMeta.imageUuid}@f9941`,
+        __expectedType__: "cc.SpriteFrame",
+      },
+      _type: 0,
+      _fillType: 0,
+      _sizeMode: 0,
+      _fillCenter: makeCocosVec2(0, 0),
+      _fillStart: 0,
+      _fillRange: 0,
+      _isTrimmedMode: false,
+      _useGrayscale: false,
+      _atlas: null,
+      _id: "",
+    });
+    records.push({
+      __type__: "cc.CompPrefabInfo",
+      fileId: stableFileId(`cocos:prefab:${rootFolderName}:${partKey}:sprite`),
+    });
+    records.push(makeCocosPrefabInfo(rootNodeIndex, stableFileId(`cocos:prefab:${rootFolderName}:${partKey}:prefab-info`)));
+  });
+}
+
 function makeCocosVec3(x, y, z) {
   return {
     __type__: "cc.Vec3",
@@ -6653,6 +7195,7 @@ function buildEnginePrefabPayload(assets, target, imagesRelativeToEnginePackage)
       width: asset.bounds.width,
       height: asset.bounds.height,
       slicing: normalizeSlicingMetadata(asset),
+      mirroring: normalizeMirroringMetadata(asset),
       unity: asset.unity,
       cocos: asset.cocos,
     })),
@@ -6899,11 +7442,13 @@ function buildUnityBuilderScript(options) {
     "    [Serializable] private class LayoutRoot { public LayoutDocument document; public LayoutPaths paths; public List<LayoutAsset> assets; }",
     "    [Serializable] private class LayoutDocument { public string name; public float width; public float height; }",
     "    [Serializable] private class LayoutPaths { public string imagesRelativeToEnginePackage; }",
-    "    [Serializable] private class LayoutAsset { public string name; public string texture; public string textureFile; public float width; public float height; public SliceLayout slicing; public UnityLayout unity; }",
+    "    [Serializable] private class LayoutAsset { public string name; public string texture; public string textureFile; public float width; public float height; public SliceLayout slicing; public MirrorLayout mirroring; public UnityLayout unity; }",
     "    [Serializable] private class SliceLayout { public bool enabled; public string type; public SliceBorder border; }",
+    "    [Serializable] private class MirrorLayout { public bool enabled; public string type; public string axis; public string retained; }",
     "    [Serializable] private class SliceBorder { public float left; public float right; public float top; public float bottom; }",
     "    [Serializable] private class UnityLayout { public string anchor; public Vec2 anchoredPosition; public Vec2 sizeDelta; }",
     "    [Serializable] private class Vec2 { public float x; public float y; }",
+    "    private class MirrorPart { public string suffix; public Vector2 position; public Vector2 size; public Vector3 scale; }",
     "",
     "    [InitializeOnLoadMethod]",
     "    private static void Initialize()",
@@ -6958,25 +7503,54 @@ function buildUnityBuilderScript(options) {
     "",
     "        foreach (var asset in data.assets)",
     "        {",
-    "            var go = new GameObject(asset.name, typeof(RectTransform), typeof(Image));",
-    "            go.transform.SetParent(root.transform, false);",
-    "            var rect = go.GetComponent<RectTransform>();",
-    "            rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(0.5f, 0.5f);",
-    "            rect.anchoredPosition3D = new Vector3(asset.unity.anchoredPosition.x, asset.unity.anchoredPosition.y, 0f);",
-    "            rect.sizeDelta = new Vector2(asset.unity.sizeDelta.x, asset.unity.sizeDelta.y);",
-    "            rect.localRotation = Quaternion.identity;",
-    "            rect.localScale = Vector3.one;",
-    "",
     "            var textureFileName = string.IsNullOrEmpty(asset.textureFile) ? $\"{asset.name}.png\" : asset.textureFile;",
     "            var textureFullPath = Path.GetFullPath(Path.Combine(imageDir, textureFileName));",
     "            var textureAssetPath = ToAssetPath(textureFullPath);",
     "            EnsureSpriteImport(textureAssetPath, asset);",
     "            var sprite = string.IsNullOrEmpty(textureAssetPath) ? null : AssetDatabase.LoadAssetAtPath<Sprite>(textureAssetPath);",
+    "            var size = new Vector2(asset.unity.sizeDelta.x, asset.unity.sizeDelta.y);",
+    "            var position = new Vector3(asset.unity.anchoredPosition.x, asset.unity.anchoredPosition.y, 0f);",
+    "            if (asset.mirroring != null && asset.mirroring.enabled)",
+    "            {",
+    "                var parent = new GameObject(asset.name, typeof(RectTransform));",
+    "                parent.transform.SetParent(root.transform, false);",
+    "                var parentRect = parent.GetComponent<RectTransform>();",
+    "                parentRect.anchorMin = parentRect.anchorMax = parentRect.pivot = new Vector2(0.5f, 0.5f);",
+    "                parentRect.anchoredPosition3D = position;",
+    "                parentRect.sizeDelta = size;",
+    "                parentRect.localRotation = Quaternion.identity;",
+    "                parentRect.localScale = Vector3.one;",
+    "                foreach (var part in BuildMirrorParts(asset.mirroring, size))",
+    "                {",
+    "                    var partGo = new GameObject($\"{asset.name}__{part.suffix}\", typeof(RectTransform), typeof(Image));",
+    "                    partGo.transform.SetParent(parent.transform, false);",
+    "                    var partRect = partGo.GetComponent<RectTransform>();",
+    "                    partRect.anchorMin = partRect.anchorMax = partRect.pivot = new Vector2(0.5f, 0.5f);",
+    "                    partRect.anchoredPosition3D = new Vector3(part.position.x, part.position.y, 0f);",
+    "                    partRect.sizeDelta = part.size;",
+    "                    partRect.localRotation = Quaternion.identity;",
+    "                    partRect.localScale = part.scale;",
+    "                    var partImage = partGo.GetComponent<Image>();",
+    "                    partImage.sprite = sprite;",
+    "                    partImage.type = Image.Type.Simple;",
+    "                    if (sprite == null) partImage.color = new Color(1f, 0.25f, 0.25f, 0.35f);",
+    "                }",
+    "                continue;",
+    "            }",
+    "            var go = new GameObject(asset.name, typeof(RectTransform), typeof(Image));",
+    "            go.transform.SetParent(root.transform, false);",
+    "            var rect = go.GetComponent<RectTransform>();",
+    "            rect.anchorMin = rect.anchorMax = rect.pivot = new Vector2(0.5f, 0.5f);",
+    "            rect.anchoredPosition3D = position;",
+    "            rect.sizeDelta = size;",
+    "            rect.localRotation = Quaternion.identity;",
+    "            rect.localScale = Vector3.one;",
+    "",
     "            var image = go.GetComponent<Image>();",
     "            image.sprite = sprite;",
     "            image.type = asset.slicing != null && asset.slicing.enabled ? Image.Type.Sliced : Image.Type.Simple;",
     "            if (sprite == null) image.color = new Color(1f, 0.25f, 0.25f, 0.35f);",
-    "            rect.sizeDelta = new Vector2(asset.unity.sizeDelta.x, asset.unity.sizeDelta.y);",
+    "            rect.sizeDelta = size;",
     "        }",
     "",
     "        var layoutAssetDir = Path.GetDirectoryName(assetJsonPath)?.Replace(\"\\\\\", \"/\") ?? \"Assets\";",
@@ -7025,6 +7599,40 @@ function buildUnityBuilderScript(options) {
     "        return string.IsNullOrEmpty(clean) ? \"PSD\" : clean;",
     "    }",
     "",
+    "    private static List<MirrorPart> BuildMirrorParts(MirrorLayout mirroring, Vector2 size)",
+    "    {",
+    "        var parts = new List<MirrorPart>();",
+    "        var axis = mirroring != null && mirroring.axis == \"y\" ? \"y\" : \"x\";",
+    "        if (axis == \"y\")",
+    "        {",
+    "            var halfHeight = size.y / 2f;",
+    "            if (mirroring != null && mirroring.retained == \"bottom\")",
+    "            {",
+    "                parts.Add(new MirrorPart { suffix = \"mirror\", position = new Vector2(0f, size.y / 4f), size = new Vector2(size.x, halfHeight), scale = new Vector3(1f, -1f, 1f) });",
+    "                parts.Add(new MirrorPart { suffix = \"source\", position = new Vector2(0f, -size.y / 4f), size = new Vector2(size.x, halfHeight), scale = Vector3.one });",
+    "            }",
+    "            else",
+    "            {",
+    "                parts.Add(new MirrorPart { suffix = \"source\", position = new Vector2(0f, size.y / 4f), size = new Vector2(size.x, halfHeight), scale = Vector3.one });",
+    "                parts.Add(new MirrorPart { suffix = \"mirror\", position = new Vector2(0f, -size.y / 4f), size = new Vector2(size.x, halfHeight), scale = new Vector3(1f, -1f, 1f) });",
+    "            }",
+    "            return parts;",
+    "        }",
+    "",
+    "        var halfWidth = size.x / 2f;",
+    "        if (mirroring != null && mirroring.retained == \"right\")",
+    "        {",
+    "            parts.Add(new MirrorPart { suffix = \"mirror\", position = new Vector2(-size.x / 4f, 0f), size = new Vector2(halfWidth, size.y), scale = new Vector3(-1f, 1f, 1f) });",
+    "            parts.Add(new MirrorPart { suffix = \"source\", position = new Vector2(size.x / 4f, 0f), size = new Vector2(halfWidth, size.y), scale = Vector3.one });",
+    "        }",
+    "        else",
+    "        {",
+    "            parts.Add(new MirrorPart { suffix = \"source\", position = new Vector2(-size.x / 4f, 0f), size = new Vector2(halfWidth, size.y), scale = Vector3.one });",
+    "            parts.Add(new MirrorPart { suffix = \"mirror\", position = new Vector2(size.x / 4f, 0f), size = new Vector2(halfWidth, size.y), scale = new Vector3(-1f, 1f, 1f) });",
+    "        }",
+    "        return parts;",
+    "    }",
+    "",
     "    private static void EnsureSpriteImport(string assetPath, LayoutAsset asset)",
     "    {",
     "        if (string.IsNullOrEmpty(assetPath)) return;",
@@ -7034,7 +7642,7 @@ function buildUnityBuilderScript(options) {
     "        var changed = false;",
     "        if (importer.textureType != TextureImporterType.Sprite) { importer.textureType = TextureImporterType.Sprite; changed = true; }",
     "        if (importer.spriteImportMode != SpriteImportMode.Single) { importer.spriteImportMode = SpriteImportMode.Single; changed = true; }",
-    "        var border = asset?.slicing != null && asset.slicing.enabled && asset.slicing.border != null",
+    "        var border = (asset?.mirroring == null || !asset.mirroring.enabled) && asset?.slicing != null && asset.slicing.enabled && asset.slicing.border != null",
     "            ? new Vector4(asset.slicing.border.left, asset.slicing.border.bottom, asset.slicing.border.right, asset.slicing.border.top)",
     "            : Vector4.zero;",
     "        if (importer.spriteBorder != border) { importer.spriteBorder = border; changed = true; }",
@@ -7133,6 +7741,27 @@ function buildCocos388BuilderScript() {
     "        const bounds = asset.bounds || {};",
     "        const contentSize = cocos.contentSize || { width: bounds.width || asset.width || 0, height: bounds.height || asset.height || 0 };",
     "        child.setPosition(new Vec3(position.x || 0, position.y || 0, 0));",
+    "        const textureFile = asset.textureFile || `${asset.texture || asset.name}.png`;",
+    "        const frame = await this.loadSpriteFrame(textureFile);",
+    "        const mirroring = asset.mirroring || {};",
+    "        if (mirroring.enabled) {",
+    "          const transform = child.addComponent(UITransform);",
+    "          transform.setContentSize(contentSize.width || 0, contentSize.height || 0);",
+    "          for (const part of this.buildMirrorPartLayouts(mirroring, contentSize)) {",
+    "            const partNode = new Node(`${asset.name}__${part.suffix}`);",
+    "            partNode.setParent(child);",
+    "            partNode.layer = Layers.Enum.UI_2D;",
+    "            partNode.setPosition(new Vec3(part.x || 0, part.y || 0, 0));",
+    "            partNode.setScale(new Vec3(part.scaleX || 1, part.scaleY || 1, 1));",
+    "            const partTransform = partNode.addComponent(UITransform);",
+    "            partTransform.setContentSize(part.width || 0, part.height || 0);",
+    "            const partSprite = partNode.addComponent(Sprite);",
+    "            partSprite.sizeMode = Sprite.SizeMode.CUSTOM;",
+    "            partSprite.trim = false;",
+    "            if (frame) partSprite.spriteFrame = frame;",
+    "          }",
+    "          continue;",
+    "        }",
     "",
     "        const transform = child.addComponent(UITransform);",
     "        transform.setContentSize(contentSize.width || 0, contentSize.height || 0);",
@@ -7141,8 +7770,6 @@ function buildCocos388BuilderScript() {
     "        sprite.sizeMode = Sprite.SizeMode.CUSTOM;",
     "        if (asset.slicing && asset.slicing.enabled) sprite.type = Sprite.Type.SLICED;",
     "        sprite.trim = false;",
-    "        const textureFile = asset.textureFile || `${asset.texture || asset.name}.png`;",
-    "        const frame = await this.loadSpriteFrame(textureFile);",
     "        if (frame) sprite.spriteFrame = frame;",
     "      }",
     "",
@@ -7179,6 +7806,36 @@ function buildCocos388BuilderScript() {
     "      child.removeFromParent();",
     "      child.destroy();",
     "    }",
+    "  }",
+    "",
+    "  private buildMirrorPartLayouts(mirroring: any, contentSize: any): any[] {",
+    "    const axis = mirroring && mirroring.axis === 'y' ? 'y' : 'x';",
+    "    const width = Number(contentSize?.width || 0);",
+    "    const height = Number(contentSize?.height || 0);",
+    "    if (axis === 'y') {",
+    "      const halfHeight = height / 2;",
+    "      if (mirroring && mirroring.retained === 'bottom') {",
+    "        return [",
+    "          { suffix: 'mirror', x: 0, y: height / 4, scaleX: 1, scaleY: -1, width, height: halfHeight },",
+    "          { suffix: 'source', x: 0, y: -height / 4, scaleX: 1, scaleY: 1, width, height: halfHeight },",
+    "        ];",
+    "      }",
+    "      return [",
+    "        { suffix: 'source', x: 0, y: height / 4, scaleX: 1, scaleY: 1, width, height: halfHeight },",
+    "        { suffix: 'mirror', x: 0, y: -height / 4, scaleX: 1, scaleY: -1, width, height: halfHeight },",
+    "      ];",
+    "    }",
+    "    const halfWidth = width / 2;",
+    "    if (mirroring && mirroring.retained === 'right') {",
+    "      return [",
+    "        { suffix: 'mirror', x: -width / 4, y: 0, scaleX: -1, scaleY: 1, width: halfWidth, height },",
+    "        { suffix: 'source', x: width / 4, y: 0, scaleX: 1, scaleY: 1, width: halfWidth, height },",
+    "      ];",
+    "    }",
+    "    return [",
+    "      { suffix: 'source', x: -width / 4, y: 0, scaleX: 1, scaleY: 1, width: halfWidth, height },",
+    "      { suffix: 'mirror', x: width / 4, y: 0, scaleX: -1, scaleY: 1, width: halfWidth, height },",
+    "    ];",
     "  }",
     "",
     "  private loadSpriteFrame(textureFileName: string): Promise<SpriteFrame | null> {",
