@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.6",
-  build: "v96",
-  stamp: "2026-06-01-05",
+  version: "1.2.7",
+  build: "v97",
+  stamp: "2026-06-02-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -1601,9 +1601,13 @@ async function runExport() {
       for (const output of batchOutputs) {
         const relativeImagePath = buildRelativeAssetImagePath(output.item);
         setStatus(`正在處理切片 ${output.index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
-        const slicedOptimizeInfo = await postprocessSlicedPngOutput(output.file, output.item);
-        if (slicedOptimizeInfo) {
-          output.exportDebug.slicedOptimize = slicedOptimizeInfo;
+        if (output.exportDebug && output.exportDebug.slicedNativeExport && output.exportDebug.slicedNativeExport.applied) {
+          output.exportDebug.slicedOptimize = output.exportDebug.slicedNativeExport;
+        } else {
+          const slicedOptimizeInfo = await postprocessSlicedPngOutput(output.file, output.item);
+          if (slicedOptimizeInfo) {
+            output.exportDebug.slicedOptimize = slicedOptimizeInfo;
+          }
         }
         results.push(makeMetadataRecord(output.item, output.exportDebug));
       }
@@ -2418,7 +2422,10 @@ async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
     }
 
     const saveOptions = buildPngSaveOptionsForFallback();
-    await exportDoc.saveAs.png(outputFile, saveOptions, true);
+    const slicedNativeExport = await trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc);
+    if (!slicedNativeExport || !slicedNativeExport.applied) {
+      await exportDoc.saveAs.png(outputFile, saveOptions, true);
+    }
     const optimizeInfo = await slimPngFileLossless(outputFile);
 
     return {
@@ -2430,6 +2437,7 @@ async function exportLayerViaDuplicateSaveAs(sourceDoc, item, outputFile) {
       prepareInfo: exportPrepareInfo,
       fallbackBounds: cropBounds || null,
       outputOptimize: optimizeInfo,
+      slicedNativeExport: slicedNativeExport || null,
     };
   } catch (error) {
     throw new Error(`Duplicate PNG fallback failed: ${formatErrorMessage(error)}`);
@@ -2462,6 +2470,198 @@ function buildPngSaveOptionsForFallback() {
     }
   }
   return options;
+}
+
+async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFile, sourceDoc) {
+  const slicing = buildSlicingMetadata(item);
+  if (!slicing.enabled) {
+    return null;
+  }
+  if (!exportDoc || !outputFile) {
+    return {
+      applied: false,
+      skipped: true,
+      reason: "missing-export-document",
+      border: slicing.border,
+    };
+  }
+
+  let compactDoc = null;
+  let sourceImageData = null;
+  let targetImageData = null;
+  try {
+    const imaging = require("photoshop").imaging;
+    if (!imaging || typeof imaging.getPixels !== "function" || typeof imaging.createImageDataFromBuffer !== "function" || typeof imaging.putPixels !== "function") {
+      throw new Error("Photoshop Imaging API unavailable");
+    }
+
+    const sourceWidth = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.width : exportDoc.width)));
+    const sourceHeight = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.height : exportDoc.height)));
+    const border = normalizeSliceBorder(slicing.border, sourceWidth, sourceHeight);
+    const outputWidth = Math.max(1, border.left + 1 + border.right);
+    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
+    if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
+      return {
+        applied: false,
+        skipped: true,
+        reason: "already-minimal",
+        sourceWidth,
+        sourceHeight,
+        outputWidth,
+        outputHeight,
+        border,
+      };
+    }
+
+    const sourcePixels = await imaging.getPixels({
+      documentID: exportDoc.id,
+      sourceBounds: { left: 0, top: 0, width: sourceWidth, height: sourceHeight },
+      colorSpace: "RGB",
+      componentSize: 8,
+    });
+    sourceImageData = sourcePixels && sourcePixels.imageData;
+    if (!sourceImageData || typeof sourceImageData.getData !== "function") {
+      throw new Error("Imaging getPixels returned no image data");
+    }
+
+    const sourceBuffer = await buildFullRgbaBufferFromImagingResult(sourcePixels, sourceWidth, sourceHeight);
+    const compactBuffer = buildCompactSlicedRgbaBuffer(sourceBuffer, sourceWidth, sourceHeight, border);
+    targetImageData = await imaging.createImageDataFromBuffer(compactBuffer, {
+      width: outputWidth,
+      height: outputHeight,
+      components: 4,
+      chunky: true,
+      colorSpace: "RGB",
+      colorProfile: sourceImageData.colorProfile || "",
+    });
+
+    compactDoc = await app.documents.add({
+      width: outputWidth,
+      height: outputHeight,
+      resolution: Math.max(1, roundNumber(toNumber(sourceDoc && sourceDoc.resolution) || toNumber(exportDoc.resolution) || 72)),
+      mode: "RGBColorMode",
+      fill: "transparent",
+      name: `slice_${sanitizeFileStem(item && item.exportName ? item.exportName : "layer")}`,
+    });
+    const targetLayer = toArray(compactDoc && compactDoc.activeLayers)[0] || toArray(compactDoc && compactDoc.layers)[0];
+    if (!targetLayer || typeof targetLayer.id !== "number") {
+      throw new Error("Unable to resolve target pixel layer for sliced output");
+    }
+
+    await imaging.putPixels({
+      documentID: compactDoc.id,
+      layerID: targetLayer.id,
+      imageData: targetImageData,
+      replace: true,
+      targetBounds: { left: 0, top: 0 },
+      commandName: "PSD Export sliced PNG",
+    });
+    await compactDoc.saveAs.png(outputFile, buildPngSaveOptionsForFallback(), true);
+
+    return {
+      applied: true,
+      skipped: false,
+      method: "photoshop-imaging",
+      sourceWidth,
+      sourceHeight,
+      outputWidth,
+      outputHeight,
+      border,
+    };
+  } catch (error) {
+    console.warn(`Unable to create native sliced PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
+    return {
+      applied: false,
+      skipped: true,
+      method: "photoshop-imaging",
+      reason: formatErrorMessage(error),
+      border: slicing.border,
+    };
+  } finally {
+    if (targetImageData && typeof targetImageData.dispose === "function") {
+      targetImageData.dispose();
+    }
+    if (sourceImageData && typeof sourceImageData.dispose === "function") {
+      sourceImageData.dispose();
+    }
+    if (compactDoc) {
+      await closeDocumentWithoutSaving(compactDoc);
+    }
+  }
+}
+
+async function buildFullRgbaBufferFromImagingResult(imageObj, fullWidth, fullHeight) {
+  const imageData = imageObj && imageObj.imageData;
+  const sourceBounds = imageObj && imageObj.sourceBounds ? imageObj.sourceBounds : { left: 0, top: 0 };
+  const returnedWidth = Math.max(1, Math.round(toNumber(imageData && imageData.width)));
+  const returnedHeight = Math.max(1, Math.round(toNumber(imageData && imageData.height)));
+  const components = Math.max(1, Math.round(toNumber(imageData && imageData.components) || 4));
+  const pixelFormat = String(imageData && imageData.pixelFormat || "").toUpperCase();
+  const sourceData = await imageData.getData({ chunky: true });
+  const full = new Uint8Array(fullWidth * fullHeight * 4);
+  const offsetX = Math.round(toNumber(sourceBounds.left));
+  const offsetY = Math.round(toNumber(sourceBounds.top));
+
+  for (let y = 0; y < returnedHeight; y += 1) {
+    const dstY = offsetY + y;
+    if (dstY < 0 || dstY >= fullHeight) {
+      continue;
+    }
+    for (let x = 0; x < returnedWidth; x += 1) {
+      const dstX = offsetX + x;
+      if (dstX < 0 || dstX >= fullWidth) {
+        continue;
+      }
+      const srcIndex = (y * returnedWidth + x) * components;
+      const dstIndex = (dstY * fullWidth + dstX) * 4;
+      full[dstIndex] = sourceData[srcIndex] || 0;
+      full[dstIndex + 1] = sourceData[srcIndex + 1] || 0;
+      full[dstIndex + 2] = sourceData[srcIndex + 2] || 0;
+      full[dstIndex + 3] = (components >= 4 || pixelFormat.includes("A")) ? (sourceData[srcIndex + 3] || 0) : 255;
+    }
+  }
+  return full;
+}
+
+function buildCompactSlicedRgbaBuffer(source, sourceWidth, sourceHeight, border) {
+  const left = Math.max(0, Math.round(toNumber(border && border.left)));
+  const right = Math.max(0, Math.round(toNumber(border && border.right)));
+  const top = Math.max(0, Math.round(toNumber(border && border.top)));
+  const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
+  const outputWidth = Math.max(1, left + 1 + right);
+  const outputHeight = Math.max(1, top + 1 + bottom);
+  const output = new Uint8Array(outputWidth * outputHeight * 4);
+  const centerSourceX = clampNumber(left + Math.floor(Math.max(1, sourceWidth - left - right) / 2), 0, Math.max(0, sourceWidth - 1));
+  const centerSourceY = clampNumber(top + Math.floor(Math.max(1, sourceHeight - top - bottom) / 2), 0, Math.max(0, sourceHeight - 1));
+
+  for (let y = 0; y < outputHeight; y += 1) {
+    const sourceY = mapSlicedOutputCoordinate(y, top, bottom, outputHeight, sourceHeight, centerSourceY);
+    for (let x = 0; x < outputWidth; x += 1) {
+      const sourceX = mapSlicedOutputCoordinate(x, left, right, outputWidth, sourceWidth, centerSourceX);
+      copyRgbaPixel(source, sourceWidth, sourceX, sourceY, output, outputWidth, x, y);
+    }
+  }
+  return output;
+}
+
+function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, sourceSize, centerSource) {
+  if (value < startBorder) {
+    return clampNumber(value, 0, Math.max(0, sourceSize - 1));
+  }
+  if (value >= outputSize - endBorder) {
+    const fromEnd = outputSize - value;
+    return clampNumber(sourceSize - fromEnd, 0, Math.max(0, sourceSize - 1));
+  }
+  return centerSource;
+}
+
+function copyRgbaPixel(source, sourceWidth, sourceX, sourceY, target, targetWidth, targetX, targetY) {
+  const sourceIndex = (sourceY * sourceWidth + sourceX) * 4;
+  const targetIndex = (targetY * targetWidth + targetX) * 4;
+  target[targetIndex] = source[sourceIndex];
+  target[targetIndex + 1] = source[sourceIndex + 1];
+  target[targetIndex + 2] = source[sourceIndex + 2];
+  target[targetIndex + 3] = source[sourceIndex + 3];
 }
 
 async function slimPngFileLossless(fileEntry) {
