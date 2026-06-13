@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.13",
-  build: "v103",
-  stamp: "2026-06-13-04",
+  version: "1.2.14",
+  build: "v104",
+  stamp: "2026-06-13-05",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -623,7 +623,7 @@ function setControlValue(control, value) {
     return;
   }
 
-  const text = String(value ?? "");
+  const text = value === null || typeof value === "undefined" ? "" : String(value);
 
   if (control.isContentEditable) {
     control.textContent = text;
