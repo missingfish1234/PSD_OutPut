@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.9",
-  build: "v99",
-  stamp: "2026-06-02-03",
+  version: "1.2.10",
+  build: "v100",
+  stamp: "2026-06-13-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -17,6 +17,7 @@ const ENABLE_DEEP_EXPORT_TRANSPARENCY_CHECK = false;
 const EXPORT_MODAL_BATCH_SIZE = 1;
 const EXPORT_MODAL_BATCH_COOLDOWN_MS = 120;
 const ENABLE_COCOS_FAST_TRIM_HINT = true;
+const ENABLE_AUTO_TRIM_PNG_OUTPUT = true;
 const PNG_COMPLETION_STABLE_POLLS = 2;
 const QUICK_EXPORT_TIMEOUT_MS = 10000;
 const ENABLE_SELECTION_QUICK_EXPORT = false;
@@ -1602,7 +1603,10 @@ async function runExport() {
 
       for (const output of batchOutputs) {
         const relativeImagePath = buildRelativeAssetImagePath(output.item);
-        setStatus(`正在處理切片 ${output.index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
+        setStatus(`正在處理圖片最佳化 ${output.index + 1} / ${state.candidates.length}\n${relativeImagePath}`, "");
+        if (!output.exportDebug) {
+          output.exportDebug = {};
+        }
         if (output.exportDebug && output.exportDebug.mirroredNativeExport && output.exportDebug.mirroredNativeExport.applied) {
           output.exportDebug.mirroredOptimize = output.exportDebug.mirroredNativeExport;
         } else if (output.exportDebug && output.exportDebug.slicedNativeExport && output.exportDebug.slicedNativeExport.applied) {
@@ -1611,6 +1615,11 @@ async function runExport() {
           const slicedOptimizeInfo = await postprocessSlicedPngOutput(output.file, output.item);
           if (slicedOptimizeInfo) {
             output.exportDebug.slicedOptimize = slicedOptimizeInfo;
+          } else {
+            const autoTrimInfo = await postprocessAutoTrimPngOutput(output.file, output.item);
+            if (autoTrimInfo) {
+              output.exportDebug.autoTrim = autoTrimInfo;
+            }
           }
         }
         results.push(makeMetadataRecord(output.item, output.exportDebug));
@@ -3662,6 +3671,201 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
   }
 }
 
+async function postprocessAutoTrimPngOutput(fileEntry, item) {
+  if (!shouldAutoTrimPngOutput(item)) {
+    return null;
+  }
+
+  let bitmap = null;
+  try {
+    bitmap = await loadBitmapFromFileEntry(fileEntry);
+    const sourceWidth = Math.max(1, Math.round(toNumber(bitmap && bitmap.width)));
+    const sourceHeight = Math.max(1, Math.round(toNumber(bitmap && bitmap.height)));
+    const sourceCanvas = document.createElement("canvas");
+    sourceCanvas.width = sourceWidth;
+    sourceCanvas.height = sourceHeight;
+    const sourceContext = sourceCanvas.getContext("2d");
+    sourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
+    sourceContext.drawImage(bitmap, 0, 0);
+
+    const trimInfo = analyzeCanvasAlphaBounds(sourceContext, sourceWidth, sourceHeight);
+    if (!trimInfo.hasVisiblePixels) {
+      return {
+        skipped: true,
+        reason: "no-visible-pixels",
+        ...trimInfo,
+      };
+    }
+
+    if (trimInfo.trimX <= 0 && trimInfo.trimY <= 0 && trimInfo.width >= sourceWidth && trimInfo.height >= sourceHeight) {
+      return {
+        skipped: true,
+        reason: "already-tight",
+        ...trimInfo,
+      };
+    }
+
+    const outputCanvas = document.createElement("canvas");
+    outputCanvas.width = trimInfo.width;
+    outputCanvas.height = trimInfo.height;
+    const outputContext = outputCanvas.getContext("2d");
+    outputContext.clearRect(0, 0, trimInfo.width, trimInfo.height);
+    outputContext.drawImage(
+      sourceCanvas,
+      trimInfo.trimX,
+      trimInfo.trimY,
+      trimInfo.width,
+      trimInfo.height,
+      0,
+      0,
+      trimInfo.width,
+      trimInfo.height
+    );
+    await writeCanvasPngToFile(outputCanvas, fileEntry);
+    applyAutoTrimToItem(item, trimInfo);
+
+    return {
+      skipped: false,
+      method: "alpha-bounds-canvas",
+      ...trimInfo,
+    };
+  } catch (error) {
+    console.warn(`Unable to auto-trim PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
+    return {
+      skipped: true,
+      reason: formatErrorMessage(error),
+    };
+  } finally {
+    if (bitmap && typeof bitmap.close === "function") {
+      bitmap.close();
+    }
+  }
+}
+
+function shouldAutoTrimPngOutput(item) {
+  if (!ENABLE_AUTO_TRIM_PNG_OUTPUT || !item || !item.bounds || item.emptySource) {
+    return false;
+  }
+  if (buildSlicingMetadata(item).enabled || buildMirroringMetadata(item).enabled) {
+    return false;
+  }
+
+  const label = [
+    item.sourceName,
+    item.sourcePath,
+    item.sanitizedSourcePath,
+    item.exportName,
+  ].filter(Boolean).join(" ");
+  return !/\[(?:no-?trim|trim-?off|keep-?padding|keep-?canvas|no-?crop)\]/i.test(label);
+}
+
+function analyzeCanvasAlphaBounds(context, rawWidth, rawHeight) {
+  const width = Math.max(1, Math.round(toNumber(rawWidth)));
+  const height = Math.max(1, Math.round(toNumber(rawHeight)));
+  const imageData = context.getImageData(0, 0, width, height).data;
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let index = 3; index < imageData.length; index += 4) {
+    if (imageData[index] <= 0) {
+      continue;
+    }
+    const pixelIndex = (index - 3) / 4;
+    const x = pixelIndex % width;
+    const y = Math.floor(pixelIndex / width);
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+
+  if (maxX < minX || maxY < minY) {
+    return {
+      rawWidth: width,
+      rawHeight: height,
+      trimX: 0,
+      trimY: 0,
+      width,
+      height,
+      offsetX: 0,
+      offsetY: 0,
+      hasVisiblePixels: false,
+    };
+  }
+
+  const trimWidth = Math.max(1, maxX - minX + 1);
+  const trimHeight = Math.max(1, maxY - minY + 1);
+  return {
+    rawWidth: width,
+    rawHeight: height,
+    trimX: minX,
+    trimY: minY,
+    width: trimWidth,
+    height: trimHeight,
+    offsetX: roundNumber(minX + trimWidth / 2 - width / 2),
+    offsetY: roundNumber(height / 2 - (minY + trimHeight / 2)),
+    hasVisiblePixels: true,
+  };
+}
+
+function applyAutoTrimToItem(item, trimInfo) {
+  if (!item || !item.bounds || !trimInfo || !trimInfo.hasVisiblePixels) {
+    return;
+  }
+
+  const originalBounds = { ...item.bounds };
+  const scaleX = originalBounds.width > 0 && trimInfo.rawWidth > 0 ? originalBounds.width / trimInfo.rawWidth : 1;
+  const scaleY = originalBounds.height > 0 && trimInfo.rawHeight > 0 ? originalBounds.height / trimInfo.rawHeight : 1;
+  const left = roundNumber(toNumber(originalBounds.left) + toNumber(trimInfo.trimX) * scaleX);
+  const top = roundNumber(toNumber(originalBounds.top) + toNumber(trimInfo.trimY) * scaleY);
+  const width = Math.max(1, roundNumber(toNumber(trimInfo.width) * scaleX));
+  const height = Math.max(1, roundNumber(toNumber(trimInfo.height) * scaleY));
+  const trimmedBounds = {
+    left,
+    top,
+    right: roundNumber(left + width),
+    bottom: roundNumber(top + height),
+    width,
+    height,
+  };
+
+  item.autoTrim = {
+    applied: true,
+    originalBounds,
+    trimmedBounds,
+    trimX: trimInfo.trimX,
+    trimY: trimInfo.trimY,
+    rawWidth: trimInfo.rawWidth,
+    rawHeight: trimInfo.rawHeight,
+    width: trimInfo.width,
+    height: trimInfo.height,
+    offsetX: trimInfo.offsetX,
+    offsetY: trimInfo.offsetY,
+  };
+  item.bounds = trimmedBounds;
+  item.boundsNoEffects = trimmedBounds;
+  item.cocosTrimHint = buildCocosTrimHint(trimmedBounds, trimmedBounds);
+  updateItemPositionsFromBounds(item, trimmedBounds);
+}
+
+function updateItemPositionsFromBounds(item, bounds) {
+  const docWidth = Math.max(1, roundNumber(toNumber(state && state.docInfo ? state.docInfo.width : 1)));
+  const docHeight = Math.max(1, roundNumber(toNumber(state && state.docInfo ? state.docInfo.height : 1)));
+  const centerX = toNumber(bounds.left) + toNumber(bounds.width) / 2;
+  const centerY = toNumber(bounds.top) + toNumber(bounds.height) / 2;
+  const engineX = roundNumber(centerX - docWidth / 2);
+  const engineY = roundNumber(docHeight / 2 - centerY);
+  item.position = {
+    photoshopTopLeft: { x: bounds.left, y: bounds.top },
+    photoshopCenter: { x: roundNumber(centerX), y: roundNumber(centerY) },
+    unity: { x: engineX, y: engineY },
+    cocos: { x: engineX, y: engineY },
+    spine: { x: engineX, y: engineY },
+  };
+}
+
 function drawNineSliceRegion(context, image, border, sourceWidth, sourceHeight) {
   const left = Math.max(0, Math.round(toNumber(border && border.left)));
   const right = Math.max(0, Math.round(toNumber(border && border.right)));
@@ -4990,6 +5194,7 @@ function makeMetadataRecord(item, exportDebug) {
     renderProfile: item.renderProfile || buildLayerRenderProfile(item.layer),
     slicing,
     mirroring,
+    autoTrim: item.autoTrim || null,
     slicingDescriptorDebug: item.slicingDescriptorDebug || null,
     mirroringDescriptorDebug: item.mirroringDescriptorDebug || null,
     exportDebug: exportDebug || null,
@@ -5719,13 +5924,44 @@ function buildExportReportText(payload) {
     "",
     "[export-debug]",
     ...(payload.assets && payload.assets.length
-      ? payload.assets.map((item) => `${item.file || `${item.name}.png`} | ${item.sourcePath} | strategy=${item.exportDebug && item.exportDebug.strategy ? item.exportDebug.strategy : "standard"} | prepare=${item.exportDebug && item.exportDebug.prepareMethod ? item.exportDebug.prepareMethod : "none"} | success=${item.exportDebug && item.exportDebug.prepareSuccess === false ? "false" : "true"} | fallback=${item.exportDebug && item.exportDebug.fallbackUsed ? "true" : "false"} | so=${item.exportDebug && item.exportDebug.prepareInfo && item.exportDebug.prepareInfo.smartObjectConverted ? "true" : "false"} | soErr=${item.exportDebug && item.exportDebug.prepareInfo && item.exportDebug.prepareInfo.smartObjectError ? item.exportDebug.prepareInfo.smartObjectError : "-"} | soSkip=${item.exportDebug && item.exportDebug.prepareInfo && item.exportDebug.prepareInfo.smartObjectSkipReason ? item.exportDebug.prepareInfo.smartObjectSkipReason : "-"} | command=${item.exportDebug && item.exportDebug.command && item.exportDebug.command.name ? item.exportDebug.command.name : "unknown"} | dest=${item.exportDebug && item.exportDebug.destFolder && item.exportDebug.destFolder.mode ? item.exportDebug.destFolder.mode : "unknown"} | destShape=${item.exportDebug && item.exportDebug.destFolder && item.exportDebug.destFolder.descriptorMode ? item.exportDebug.destFolder.descriptorMode : "unknown"} | source=${item.exportDebug && item.exportDebug.outputFile && item.exportDebug.outputFile.source ? item.exportDebug.outputFile.source : "unknown"} | file=${item.exportDebug && item.exportDebug.outputFile && item.exportDebug.outputFile.relativePath ? item.exportDebug.outputFile.relativePath : "-"} | bytes=${item.exportDebug && item.exportDebug.outputFile && typeof item.exportDebug.outputFile.byteLength === "number" ? item.exportDebug.outputFile.byteLength : 0} | waitedMs=${item.exportDebug && item.exportDebug.outputFile && typeof item.exportDebug.outputFile.waitedMs === "number" ? item.exportDebug.outputFile.waitedMs : 0}`)
+      ? payload.assets.map(formatExportDebugLine)
       : ["none"]),
     "",
     "[spine-rule-tests]",
     ...payload.checks.spineRuleTests.cases.map((item) => `${item.name}: ${item.passed ? "PASS" : "FAIL"} (${item.expected.join(",")} => ${item.actual.join(",")})`),
   ];
   return lines.join("\n");
+}
+
+function formatExportDebugLine(item) {
+  const debug = item && item.exportDebug ? item.exportDebug : {};
+  const prepareInfo = debug.prepareInfo || {};
+  const outputFile = debug.outputFile || {};
+  const command = debug.command || {};
+  const destFolder = debug.destFolder || {};
+  const autoTrim = debug.autoTrim || item.autoTrim || null;
+  const trimText = autoTrim
+    ? `${autoTrim.skipped ? "skip" : "yes"}:${autoTrim.rawWidth || "?"}x${autoTrim.rawHeight || "?"}->${autoTrim.width || "?"}x${autoTrim.height || "?"}@${autoTrim.trimX || 0},${autoTrim.trimY || 0}${autoTrim.reason ? `:${autoTrim.reason}` : ""}`
+    : "no";
+
+  return [
+    `${item.file || `${item.name}.png`} | ${item.sourcePath}`,
+    `strategy=${debug.strategy || "standard"}`,
+    `prepare=${debug.prepareMethod || "none"}`,
+    `success=${debug.prepareSuccess === false ? "false" : "true"}`,
+    `fallback=${debug.fallbackUsed ? "true" : "false"}`,
+    `so=${prepareInfo.smartObjectConverted ? "true" : "false"}`,
+    `soErr=${prepareInfo.smartObjectError || "-"}`,
+    `soSkip=${prepareInfo.smartObjectSkipReason || "-"}`,
+    `trim=${trimText}`,
+    `command=${command.name || "unknown"}`,
+    `dest=${destFolder.mode || "unknown"}`,
+    `destShape=${destFolder.descriptorMode || "unknown"}`,
+    `source=${outputFile.source || "unknown"}`,
+    `file=${outputFile.relativePath || "-"}`,
+    `bytes=${typeof outputFile.byteLength === "number" ? outputFile.byteLength : 0}`,
+    `waitedMs=${typeof outputFile.waitedMs === "number" ? outputFile.waitedMs : 0}`,
+  ].join(" | ");
 }
 
 async function collectFileNameSet(folder) {
