@@ -279,6 +279,21 @@ function Build-Ccx {
   }
 }
 
+function Get-UpiaPath {
+  $candidates = @(
+    (Join-Path ${env:ProgramFiles} "Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe"),
+    (Join-Path ${env:ProgramFiles(x86)} "Common Files\Adobe\Adobe Desktop Common\RemoteComponents\UPI\UnifiedPluginInstallerAgent\UnifiedPluginInstallerAgent.exe")
+  )
+
+  foreach ($candidate in $candidates) {
+    if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+      return $candidate
+    }
+  }
+
+  return ""
+}
+
 function Get-LatestCcx {
   param([string]$Root)
   $dist = Join-Path $Root "launcher\dist"
@@ -298,12 +313,26 @@ function Install-Ccx {
   if ([string]::IsNullOrWhiteSpace($ccx)) {
     throw "No CCX package found. Build CCX first."
   }
-  $cmd = Join-Path (Split-Path -Parent $ccx) ("Install_" + [System.IO.Path]::GetFileNameWithoutExtension($ccx) + ".cmd")
-  if (Test-Path -LiteralPath $cmd) {
-    & cmd.exe /c "`"$cmd`" `"$ccx`""
-    return
+  $upia = Get-UpiaPath
+  if ([string]::IsNullOrWhiteSpace($upia)) {
+    throw "UnifiedPluginInstallerAgent.exe was not found. Install or update Adobe Creative Cloud Desktop."
   }
-  throw "Install helper not found: $cmd"
+
+  & $upia /install $ccx
+  if ($LASTEXITCODE -ne 0) {
+    & $upia --install $ccx
+    if ($LASTEXITCODE -ne 0) {
+      throw "CCX install failed with exit code $LASTEXITCODE"
+    }
+  }
+
+  $syncScript = Join-Path $Root "launcher\sync_uxp_storage.ps1"
+  if (Test-Path -LiteralPath $syncScript) {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $syncScript -CcxPath $ccx
+    if ($LASTEXITCODE -ne 0) {
+      throw "UXP cache sync failed with exit code $LASTEXITCODE"
+    }
+  }
 }
 
 function Run-Interactive {

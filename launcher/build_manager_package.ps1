@@ -24,6 +24,7 @@ $version = if ($manifest.version) { $manifest.version } else { "unknown" }
 $safeVersion = $version -replace '[^0-9A-Za-z\.-]', '_'
 
 $managerExe = Join-Path $distDir "PSDExportManager.exe"
+$syncScript = Join-Path $scriptRoot "sync_uxp_storage.ps1"
 $ccx = Get-ChildItem -LiteralPath $distDir -Filter "PSDExportPipeline_*.ccx" |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
@@ -43,6 +44,9 @@ try {
   New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
   Copy-Item -LiteralPath $managerExe -Destination $packageRoot -Force
   Copy-Item -LiteralPath $ccx.FullName -Destination $packageRoot -Force
+  if (Test-Path -LiteralPath $syncScript) {
+    Copy-Item -LiteralPath $syncScript -Destination $packageRoot -Force
+  }
 
   $readme = @"
 PSD Export Manager

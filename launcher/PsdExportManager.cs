@@ -407,6 +407,93 @@ internal sealed class PsdExportManagerForm : Form
         {
             RunProcess(upia, "--install \"" + ccx + "\"", AppDir);
         }
+        var synced = SyncCcxToPluginStorage(ccx);
+        if (synced == 0)
+        {
+            Log("No existing Photoshop UXP cache folder was found. Restart Photoshop after install.");
+        }
+        else
+        {
+            Log("Synced Photoshop UXP cache folders: " + synced);
+        }
+    }
+
+    private int SyncCcxToPluginStorage(string ccx)
+    {
+        if (string.IsNullOrEmpty(ccx) || !File.Exists(ccx))
+        {
+            throw new Exception("CCX file not found: " + ccx);
+        }
+
+        var tempRoot = Path.Combine(Path.GetTempPath(), "psd_export_sync_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(tempRoot);
+            ZipFile.ExtractToDirectory(ccx, tempRoot);
+
+            var manifestPath = Path.Combine(tempRoot, "manifest.json");
+            if (!File.Exists(manifestPath))
+            {
+                throw new Exception("manifest.json not found inside CCX: " + ccx);
+            }
+
+            var manifestText = File.ReadAllText(manifestPath, Encoding.UTF8);
+            var pluginId = GetManifestField(manifestText, "id");
+            var version = GetManifestField(manifestText, "version");
+            if (string.IsNullOrEmpty(pluginId))
+            {
+                throw new Exception("Plugin id not found in manifest.");
+            }
+
+            var storageRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Adobe", "UXP", "PluginsStorage");
+            var synced = 0;
+            foreach (var product in new[] { "PHSP", "PHSPBETA" })
+            {
+                var productRoot = Path.Combine(storageRoot, product);
+                if (!Directory.Exists(productRoot)) continue;
+                foreach (var hostVersionDir in Directory.GetDirectories(productRoot))
+                {
+                    foreach (var bucket in new[] { "Developer", "External" })
+                    {
+                        var target = Path.Combine(hostVersionDir, bucket, pluginId);
+                        if (!Directory.Exists(target)) continue;
+                        CopyDirectoryFiles(tempRoot, target);
+                        synced += 1;
+                        Log("Synced " + pluginId + " " + version + " -> " + target);
+                    }
+                }
+            }
+            return synced;
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                try { Directory.Delete(tempRoot, true); } catch { }
+            }
+        }
+    }
+
+    private static string GetManifestField(string manifestText, string field)
+    {
+        var pattern = "\"" + Regex.Escape(field) + "\"\\s*:\\s*\"([^\"]*)\"";
+        var match = Regex.Match(manifestText ?? "", pattern, RegexOptions.IgnoreCase);
+        return match.Success ? match.Groups[1].Value : "";
+    }
+
+    private static void CopyDirectoryFiles(string sourceRoot, string destinationRoot)
+    {
+        foreach (var file in Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories))
+        {
+            var relative = file.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var destination = Path.Combine(destinationRoot, relative);
+            var destinationDir = Path.GetDirectoryName(destination);
+            if (!string.IsNullOrEmpty(destinationDir))
+            {
+                Directory.CreateDirectory(destinationDir);
+            }
+            File.Copy(file, destination, true);
+        }
     }
 
     private string GetRemoteCommit()

@@ -69,6 +69,7 @@ $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $pluginRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptRoot ".."))
 $distDir = Join-Path $scriptRoot "dist"
 $manifestPath = Join-Path $pluginRoot "manifest.json"
+$syncScript = Join-Path $scriptRoot "sync_uxp_storage.ps1"
 
 if (-not (Test-Path -LiteralPath $manifestPath)) {
   throw "manifest.json not found: $manifestPath"
@@ -104,6 +105,10 @@ try {
   Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $zipPath -Force
   Move-Item -LiteralPath $zipPath -Destination $ccxPath -Force
 
+  if (Test-Path -LiteralPath $syncScript) {
+    Copy-Item -LiteralPath $syncScript -Destination (Join-Path $distDir "sync_uxp_storage.ps1") -Force
+  }
+
 $cmdText = @"
 @echo off
 setlocal
@@ -133,6 +138,11 @@ if errorlevel 1 (
   echo.
   echo First install command failed. Trying --install syntax...
   "%UPIA%" --install "%CCX%"
+)
+if exist "%~dp0sync_uxp_storage.ps1" (
+  echo.
+  echo Syncing Photoshop UXP cache...
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0sync_uxp_storage.ps1" -CcxPath "%CCX%"
 )
 echo.
 echo Done. Restart Photoshop and check Plugins / UXP panel list.
