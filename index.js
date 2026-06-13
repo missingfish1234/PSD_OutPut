@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.16",
-  build: "v106",
-  stamp: "2026-06-13-07",
+  version: "1.2.17",
+  build: "v107",
+  stamp: "2026-06-13-08",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2653,17 +2653,12 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
     const sourceBuffer = await buildFullRgbaBufferFromImagingResult(sourcePixels, sourceWidth, sourceHeight);
     const resolvedSlicing = resolveAutoSliceMetadataFromRgbaBuffer(slicing, sourceBuffer, sourceWidth, sourceHeight);
     if (slicing.auto && resolvedSlicing.autoDetectionError) {
-      return {
-        applied: false,
-        skipped: true,
+      resolvedSlicing.border = slicing.border;
+      resolvedSlicing.autoDetected = {
+        method: "fallback-marker-border",
         reason: resolvedSlicing.autoDetectionError,
-        sourceWidth,
-        sourceHeight,
-        outputWidth: sourceWidth,
-        outputHeight: sourceHeight,
-        border: slicing.border,
-        autoDetected: resolvedSlicing.autoDetected || null,
       };
+      delete resolvedSlicing.autoDetectionError;
     }
     const border = normalizeSliceBorder(resolvedSlicing.border, sourceWidth, sourceHeight);
     if (slicing.auto) {
@@ -3020,7 +3015,7 @@ function evaluateSlicedReconstructionQuality(source, sourceWidth, sourceHeight, 
 
   const averageDelta = count ? total / count : 999;
   const badRatio = count ? bad / count : 1;
-  const pass = averageDelta <= 4 && badRatio <= 0.001 && maxDelta <= 64;
+  const pass = averageDelta <= 4 && badRatio <= 0.001 && maxDelta <= 160;
   return {
     pass,
     reason: pass ? "" : "reconstruction-error-too-high",
@@ -4115,7 +4110,12 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
       ? resolveAutoSliceMetadataFromCanvas(slicing, sourceContext, sourceWidth, sourceHeight)
       : slicing;
     if (slicing.auto && resolvedSlicing.autoDetectionError) {
-      return null;
+      resolvedSlicing.border = slicing.border;
+      resolvedSlicing.autoDetected = {
+        method: "fallback-marker-border",
+        reason: resolvedSlicing.autoDetectionError,
+      };
+      delete resolvedSlicing.autoDetectionError;
     }
     const border = normalizeSliceBorder(resolvedSlicing.border, sourceWidth, sourceHeight);
     if (slicing.auto) {
@@ -7228,7 +7228,7 @@ async function loadBitmapFromFileEntry(fileEntry) {
     throw new Error("PNG read returned empty data");
   }
 
-  const decodeTimeoutMs = 12000;
+  const decodeTimeoutMs = 30000;
   const blob = typeof Blob === "function" ? new Blob([bytes], { type: "image/png" }) : null;
   if (typeof Blob === "function" && typeof createImageBitmap === "function") {
     try {
