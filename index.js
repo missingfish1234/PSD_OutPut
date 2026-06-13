@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.10",
-  build: "v100",
-  stamp: "2026-06-13-01",
+  version: "1.2.11",
+  build: "v101",
+  stamp: "2026-06-13-02",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2638,21 +2638,6 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
 
     const sourceWidth = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.width : exportDoc.width)));
     const sourceHeight = Math.max(1, Math.round(toNumber(item && item.bounds ? item.bounds.height : exportDoc.height)));
-    const border = normalizeSliceBorder(slicing.border, sourceWidth, sourceHeight);
-    const outputWidth = Math.max(1, border.left + 1 + border.right);
-    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
-    if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
-      return {
-        applied: false,
-        skipped: true,
-        reason: "already-minimal",
-        sourceWidth,
-        sourceHeight,
-        outputWidth,
-        outputHeight,
-        border,
-      };
-    }
 
     const sourcePixels = await imaging.getPixels({
       documentID: exportDoc.id,
@@ -2666,6 +2651,44 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
     }
 
     const sourceBuffer = await buildFullRgbaBufferFromImagingResult(sourcePixels, sourceWidth, sourceHeight);
+    const resolvedSlicing = resolveAutoSliceMetadataFromRgbaBuffer(slicing, sourceBuffer, sourceWidth, sourceHeight);
+    if (slicing.auto && resolvedSlicing.autoDetectionError) {
+      item.slicingExportDisabled = true;
+      return {
+        applied: false,
+        skipped: true,
+        reason: resolvedSlicing.autoDetectionError,
+        sourceWidth,
+        sourceHeight,
+        outputWidth: sourceWidth,
+        outputHeight: sourceHeight,
+        border: slicing.border,
+        autoDetected: resolvedSlicing.autoDetected || null,
+      };
+    }
+    const border = normalizeSliceBorder(resolvedSlicing.border, sourceWidth, sourceHeight);
+    if (slicing.auto) {
+      item.slicingOverride = {
+        ...resolvedSlicing,
+        border,
+      };
+    }
+    const outputWidth = Math.max(1, border.left + 1 + border.right);
+    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
+    if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
+      return {
+        applied: false,
+        skipped: true,
+        reason: resolvedSlicing.autoDetectionError || "already-minimal",
+        sourceWidth,
+        sourceHeight,
+        outputWidth,
+        outputHeight,
+        border,
+        autoDetected: resolvedSlicing.autoDetected || null,
+      };
+    }
+
     const compactBuffer = buildCompactSlicedRgbaBuffer(sourceBuffer, sourceWidth, sourceHeight, border);
     targetImageData = await imaging.createImageDataFromBuffer(compactBuffer, {
       width: outputWidth,
@@ -2708,6 +2731,7 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
       outputWidth,
       outputHeight,
       border,
+      autoDetected: resolvedSlicing.autoDetected || null,
     };
   } catch (error) {
     console.warn(`Unable to create native sliced PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
@@ -2783,6 +2807,125 @@ function buildCompactSlicedRgbaBuffer(source, sourceWidth, sourceHeight, border)
     }
   }
   return output;
+}
+
+function resolveAutoSliceMetadataFromRgbaBuffer(slicing, source, sourceWidth, sourceHeight) {
+  if (!slicing || !slicing.auto) {
+    return slicing;
+  }
+
+  const detected = detectAutoSliceTransparentCenter(sourceWidth, sourceHeight, (x, y) => {
+    const index = (y * sourceWidth + x) * 4 + 3;
+    return source[index] <= 0;
+  });
+  return buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight);
+}
+
+function resolveAutoSliceMetadataFromCanvas(slicing, context, sourceWidth, sourceHeight) {
+  if (!slicing || !slicing.auto) {
+    return slicing;
+  }
+
+  const imageData = context.getImageData(0, 0, sourceWidth, sourceHeight).data;
+  const detected = detectAutoSliceTransparentCenter(sourceWidth, sourceHeight, (x, y) => {
+    const index = (y * sourceWidth + x) * 4 + 3;
+    return imageData[index] <= 0;
+  });
+  return buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight);
+}
+
+function buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight) {
+  if (!detected) {
+    return {
+      ...slicing,
+      autoDetectionError: "auto-slice-no-centered-transparent-region",
+      autoDetected: null,
+    };
+  }
+
+  const border = normalizeSliceBorder({
+    left: detected.left,
+    right: sourceWidth - detected.right,
+    top: detected.top,
+    bottom: sourceHeight - detected.bottom,
+  }, sourceWidth, sourceHeight);
+
+  return {
+    ...slicing,
+    source: slicing.source || "auto-slice",
+    auto: true,
+    autoDetected: {
+      method: "largest-centered-transparent-rectangle",
+      transparentRect: {
+        left: detected.left,
+        top: detected.top,
+        right: detected.right,
+        bottom: detected.bottom,
+        width: detected.width,
+        height: detected.height,
+      },
+      score: detected.area,
+    },
+    border,
+  };
+}
+
+function detectAutoSliceTransparentCenter(width, height, isTransparent) {
+  const safeWidth = Math.max(1, Math.round(toNumber(width)));
+  const safeHeight = Math.max(1, Math.round(toNumber(height)));
+  const centerX = Math.floor(safeWidth / 2);
+  const centerY = Math.floor(safeHeight / 2);
+  const heights = new Array(safeWidth).fill(0);
+  let best = null;
+
+  for (let y = 0; y < safeHeight; y += 1) {
+    for (let x = 0; x < safeWidth; x += 1) {
+      heights[x] = isTransparent(x, y) ? heights[x] + 1 : 0;
+    }
+
+    const stack = [];
+    for (let x = 0; x <= safeWidth; x += 1) {
+      const currentHeight = x < safeWidth ? heights[x] : 0;
+      let start = x;
+      while (stack.length && stack[stack.length - 1].height > currentHeight) {
+        const previous = stack.pop();
+        const rect = {
+          left: previous.start,
+          right: x,
+          top: y - previous.height + 1,
+          bottom: y + 1,
+          width: x - previous.start,
+          height: previous.height,
+        };
+        rect.area = rect.width * rect.height;
+        if (isUsableAutoSliceRect(rect, safeWidth, safeHeight, centerX, centerY)
+          && (!best || rect.area > best.area)) {
+          best = rect;
+        }
+        start = previous.start;
+      }
+      if (!stack.length || stack[stack.length - 1].height < currentHeight) {
+        stack.push({ start, height: currentHeight });
+      }
+    }
+  }
+
+  return best;
+}
+
+function isUsableAutoSliceRect(rect, width, height, centerX, centerY) {
+  if (!rect || rect.width < 2 || rect.height < 2) {
+    return false;
+  }
+  if (rect.left <= 0 || rect.top <= 0 || rect.right >= width || rect.bottom >= height) {
+    return false;
+  }
+  if (centerX < rect.left || centerX >= rect.right || centerY < rect.top || centerY >= rect.bottom) {
+    return false;
+  }
+  const minStretchWidth = Math.max(2, Math.round(width * 0.1));
+  const minStretchHeight = Math.max(2, Math.round(height * 0.1));
+  return rect.width >= minStretchWidth && rect.height >= minStretchHeight;
 }
 
 function buildCompactMirroredRgbaBuffer(source, sourceWidth, sourceHeight, mirroring) {
@@ -3628,7 +3771,30 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
     const bitmap = await loadBitmapFromFileEntry(fileEntry);
     const sourceWidth = Math.max(1, Math.round(toNumber(bitmap && bitmap.width)));
     const sourceHeight = Math.max(1, Math.round(toNumber(bitmap && bitmap.height)));
-    const border = normalizeSliceBorder(slicing.border, sourceWidth, sourceHeight);
+    let sourceCanvas = null;
+    let sourceContext = null;
+    if (slicing.auto) {
+      sourceCanvas = document.createElement("canvas");
+      sourceCanvas.width = sourceWidth;
+      sourceCanvas.height = sourceHeight;
+      sourceContext = sourceCanvas.getContext("2d");
+      sourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
+      sourceContext.drawImage(bitmap, 0, 0);
+    }
+    const resolvedSlicing = sourceContext
+      ? resolveAutoSliceMetadataFromCanvas(slicing, sourceContext, sourceWidth, sourceHeight)
+      : slicing;
+    if (slicing.auto && resolvedSlicing.autoDetectionError) {
+      item.slicingExportDisabled = true;
+      return null;
+    }
+    const border = normalizeSliceBorder(resolvedSlicing.border, sourceWidth, sourceHeight);
+    if (slicing.auto) {
+      item.slicingOverride = {
+        ...resolvedSlicing,
+        border,
+      };
+    }
     const stretchWidth = Math.max(1, sourceWidth - border.left - border.right);
     const stretchHeight = Math.max(1, sourceHeight - border.top - border.bottom);
     if (stretchWidth <= 1 && stretchHeight <= 1) {
@@ -3640,6 +3806,7 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
         outputWidth: sourceWidth,
         outputHeight: sourceHeight,
         border,
+        autoDetected: resolvedSlicing.autoDetected || null,
       };
     }
 
@@ -3660,6 +3827,7 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
       outputWidth,
       outputHeight,
       border,
+      autoDetected: resolvedSlicing.autoDetected || null,
     };
   } catch (error) {
     console.warn(`Unable to optimize sliced PNG: ${item && item.exportName ? item.exportName : "unknown"}`, error);
@@ -5243,6 +5411,14 @@ function buildSlicingMetadata(item) {
     return disabled;
   }
 
+  if (item.slicingExportDisabled) {
+    return {
+      ...disabled,
+      source: "export-fallback",
+      marker: "slice-export-disabled",
+    };
+  }
+
   if (item.slicingOverride && item.slicingOverride.enabled) {
     return {
       ...item.slicingOverride,
@@ -5345,7 +5521,9 @@ function parseSlicingMetadataFromLabel(label, item) {
   }
 
   const markerMatch = label.match(/\[(?:slice|sliced|9slice|9-slice)\s*[:=]\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\]/i);
-  const hasMarker = Boolean(markerMatch || /(?:^|[\s_\-[/(])(?:slice|sliced|9slice|9-slice)(?:$|[\s_\-\]/):=])|九宮格|切片/i.test(label));
+  const autoMarkerMatch = label.match(/\[(?:slice|sliced|9slice|9-slice)\s*[:=]\s*auto\]/i)
+    || label.match(/\[(?:auto-?slice|autoslice)\]/i);
+  const hasMarker = Boolean(markerMatch || autoMarkerMatch || /(?:^|[\s_\-[/(])(?:slice|sliced|9slice|9-slice)(?:$|[\s_\-\]/):=])|九宮格|切片/i.test(label));
   if (!hasMarker) {
     return disabled;
   }
@@ -5371,8 +5549,9 @@ function parseSlicingMetadataFromLabel(label, item) {
   return {
     enabled: true,
     type: "sliced",
-    source: markerMatch ? "name-marker-explicit" : "name-marker-default",
-    marker: markerMatch ? markerMatch[0] : "sliced",
+    source: markerMatch ? "name-marker-explicit" : autoMarkerMatch ? "name-marker-auto" : "name-marker-default",
+    marker: markerMatch ? markerMatch[0] : autoMarkerMatch ? autoMarkerMatch[0] : "sliced",
+    auto: Boolean(autoMarkerMatch),
     border: normalizeSliceBorder(border, width, height),
   };
 }
@@ -5583,6 +5762,8 @@ function normalizeSlicingMetadata(asset) {
     type: "sliced",
     source: slicing.source || "",
     marker: slicing.marker || "",
+    auto: Boolean(slicing.auto),
+    autoDetected: slicing.autoDetected || null,
     border: normalizeSliceBorder(slicing.border || {}, width, height),
   };
 }
@@ -5943,6 +6124,12 @@ function formatExportDebugLine(item) {
   const trimText = autoTrim
     ? `${autoTrim.skipped ? "skip" : "yes"}:${autoTrim.rawWidth || "?"}x${autoTrim.rawHeight || "?"}->${autoTrim.width || "?"}x${autoTrim.height || "?"}@${autoTrim.trimX || 0},${autoTrim.trimY || 0}${autoTrim.reason ? `:${autoTrim.reason}` : ""}`
     : "no";
+  const slicing = item && item.slicing && item.slicing.enabled ? item.slicing : null;
+  const slicedOptimize = debug.slicedOptimize || debug.slicedNativeExport || null;
+  const sliceBorder = slicing && slicing.border ? slicing.border : null;
+  const sliceText = slicing
+    ? `${slicing.auto ? "auto" : "yes"}:${sliceBorder ? `${sliceBorder.left},${sliceBorder.right},${sliceBorder.top},${sliceBorder.bottom}` : "?"}${slicedOptimize && slicedOptimize.outputWidth ? `:${slicedOptimize.sourceWidth || "?"}x${slicedOptimize.sourceHeight || "?"}->${slicedOptimize.outputWidth}x${slicedOptimize.outputHeight}` : ""}`
+    : "no";
 
   return [
     `${item.file || `${item.name}.png`} | ${item.sourcePath}`,
@@ -5954,6 +6141,7 @@ function formatExportDebugLine(item) {
     `soErr=${prepareInfo.smartObjectError || "-"}`,
     `soSkip=${prepareInfo.smartObjectSkipReason || "-"}`,
     `trim=${trimText}`,
+    `slice=${sliceText}`,
     `command=${command.name || "unknown"}`,
     `dest=${destFolder.mode || "unknown"}`,
     `destShape=${destFolder.descriptorMode || "unknown"}`,
