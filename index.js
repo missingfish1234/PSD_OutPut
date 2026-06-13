@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.11",
-  build: "v101",
-  stamp: "2026-06-13-02",
+  version: "1.2.12",
+  build: "v102",
+  stamp: "2026-06-13-03",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2673,8 +2673,9 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
         border,
       };
     }
-    const outputWidth = Math.max(1, border.left + 1 + border.right);
-    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
+    const outputSize = getSlicedOutputSize(sourceWidth, sourceHeight, border);
+    const outputWidth = outputSize.width;
+    const outputHeight = outputSize.height;
     if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
       return {
         applied: false,
@@ -2793,16 +2794,15 @@ function buildCompactSlicedRgbaBuffer(source, sourceWidth, sourceHeight, border)
   const right = Math.max(0, Math.round(toNumber(border && border.right)));
   const top = Math.max(0, Math.round(toNumber(border && border.top)));
   const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
-  const outputWidth = Math.max(1, left + 1 + right);
-  const outputHeight = Math.max(1, top + 1 + bottom);
+  const outputSize = getSlicedOutputSize(sourceWidth, sourceHeight, { left, right, top, bottom });
+  const outputWidth = outputSize.width;
+  const outputHeight = outputSize.height;
   const output = new Uint8Array(outputWidth * outputHeight * 4);
-  const centerSourceX = clampNumber(left + Math.floor(Math.max(1, sourceWidth - left - right) / 2), 0, Math.max(0, sourceWidth - 1));
-  const centerSourceY = clampNumber(top + Math.floor(Math.max(1, sourceHeight - top - bottom) / 2), 0, Math.max(0, sourceHeight - 1));
 
   for (let y = 0; y < outputHeight; y += 1) {
-    const sourceY = mapSlicedOutputCoordinate(y, top, bottom, outputHeight, sourceHeight, centerSourceY);
+    const sourceY = mapSlicedOutputCoordinate(y, top, bottom, outputHeight, sourceHeight);
     for (let x = 0; x < outputWidth; x += 1) {
-      const sourceX = mapSlicedOutputCoordinate(x, left, right, outputWidth, sourceWidth, centerSourceX);
+      const sourceX = mapSlicedOutputCoordinate(x, left, right, outputWidth, sourceWidth);
       copyRgbaPixel(source, sourceWidth, sourceX, sourceY, output, outputWidth, x, y);
     }
   }
@@ -2818,7 +2818,16 @@ function resolveAutoSliceMetadataFromRgbaBuffer(slicing, source, sourceWidth, so
     const index = (y * sourceWidth + x) * 4 + 3;
     return source[index] <= 0;
   });
-  return buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight);
+  const repeated = detectAutoSliceRepeatedCenter(sourceWidth, sourceHeight, (x, y) => {
+    const index = (y * sourceWidth + x) * 4;
+    return [
+      source[index] || 0,
+      source[index + 1] || 0,
+      source[index + 2] || 0,
+      source[index + 3] || 0,
+    ];
+  });
+  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight);
 }
 
 function resolveAutoSliceMetadataFromCanvas(slicing, context, sourceWidth, sourceHeight) {
@@ -2831,23 +2840,33 @@ function resolveAutoSliceMetadataFromCanvas(slicing, context, sourceWidth, sourc
     const index = (y * sourceWidth + x) * 4 + 3;
     return imageData[index] <= 0;
   });
-  return buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight);
+  const repeated = detectAutoSliceRepeatedCenter(sourceWidth, sourceHeight, (x, y) => {
+    const index = (y * sourceWidth + x) * 4;
+    return [
+      imageData[index] || 0,
+      imageData[index + 1] || 0,
+      imageData[index + 2] || 0,
+      imageData[index + 3] || 0,
+    ];
+  });
+  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight);
 }
 
-function buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHeight) {
-  if (!detected) {
+function buildAutoSliceResolvedMetadata(slicing, transparentDetected, repeatedDetected, sourceWidth, sourceHeight) {
+  const resolved = resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight);
+  if (!resolved) {
     return {
       ...slicing,
-      autoDetectionError: "auto-slice-no-centered-transparent-region",
+      autoDetectionError: "auto-slice-no-centered-stretch-region",
       autoDetected: null,
     };
   }
 
   const border = normalizeSliceBorder({
-    left: detected.left,
-    right: sourceWidth - detected.right,
-    top: detected.top,
-    bottom: sourceHeight - detected.bottom,
+    left: resolved.x ? resolved.x.left : 0,
+    right: resolved.x ? sourceWidth - resolved.x.right : 0,
+    top: resolved.y ? resolved.y.top : 0,
+    bottom: resolved.y ? sourceHeight - resolved.y.bottom : 0,
   }, sourceWidth, sourceHeight);
 
   return {
@@ -2855,18 +2874,105 @@ function buildAutoSliceResolvedMetadata(slicing, detected, sourceWidth, sourceHe
     source: slicing.source || "auto-slice",
     auto: true,
     autoDetected: {
-      method: "largest-centered-transparent-rectangle",
-      transparentRect: {
-        left: detected.left,
-        top: detected.top,
-        right: detected.right,
-        bottom: detected.bottom,
-        width: detected.width,
-        height: detected.height,
-      },
-      score: detected.area,
+      method: resolved.method,
+      axes: resolved.axes,
+      transparentRect: transparentDetected ? {
+        left: transparentDetected.left,
+        top: transparentDetected.top,
+        right: transparentDetected.right,
+        bottom: transparentDetected.bottom,
+        width: transparentDetected.width,
+        height: transparentDetected.height,
+      } : null,
+      repeatX: repeatedDetected && repeatedDetected.x ? repeatedDetected.x : null,
+      repeatY: repeatedDetected && repeatedDetected.y ? repeatedDetected.y : null,
+      score: resolved.score,
     },
     border,
+  };
+}
+
+function resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight) {
+  const width = Math.max(1, Math.round(toNumber(sourceWidth)));
+  const height = Math.max(1, Math.round(toNumber(sourceHeight)));
+  const aspect = width / Math.max(1, height);
+  const transparentX = transparentDetected ? {
+    left: transparentDetected.left,
+    right: transparentDetected.right,
+    score: transparentDetected.width,
+    method: "transparent",
+  } : null;
+  const transparentY = transparentDetected ? {
+    top: transparentDetected.top,
+    bottom: transparentDetected.bottom,
+    score: transparentDetected.height,
+    method: "transparent",
+  } : null;
+  const repeatX = repeatedDetected && repeatedDetected.x ? repeatedDetected.x : null;
+  const repeatY = repeatedDetected && repeatedDetected.y ? repeatedDetected.y : null;
+  const x = chooseAutoSliceAxisCandidate(transparentX, repeatX, "x");
+  const y = chooseAutoSliceAxisCandidate(transparentY, repeatY, "y");
+  const wide = aspect >= 1.2;
+  const tall = aspect <= 0.85;
+  let useX = false;
+  let useY = false;
+
+  if (wide) {
+    useX = Boolean(x);
+    useY = false;
+  } else if (tall) {
+    useX = false;
+    useY = Boolean(y);
+  } else {
+    useX = Boolean(x);
+    useY = Boolean(y);
+  }
+
+  if (!useX && !useY) {
+    if (x && (!y || x.score >= y.score)) {
+      useX = true;
+    } else if (y) {
+      useY = true;
+    }
+  }
+
+  if (!useX && !useY) {
+    return null;
+  }
+
+  return {
+    method: [useX ? (x.method === "transparent" ? "transparent-center-x" : "repeated-center-x") : "", useY ? (y.method === "transparent" ? "transparent-center-y" : "repeated-center-y") : ""].filter(Boolean).join("+"),
+    axes: `${useX ? "x" : ""}${useY ? "y" : ""}`,
+    x: useX ? x : null,
+    y: useY ? y : null,
+    score: roundNumber((useX && x ? x.score : 0) + (useY && y ? y.score : 0)),
+  };
+}
+
+function chooseAutoSliceAxisCandidate(transparentCandidate, repeatCandidate, axis) {
+  const candidates = [transparentCandidate, repeatCandidate].filter(Boolean);
+  if (!candidates.length) {
+    return null;
+  }
+  candidates.sort((a, b) => {
+    if (a.method === "transparent" && b.method !== "transparent") return -1;
+    if (a.method !== "transparent" && b.method === "transparent") return 1;
+    return b.score - a.score;
+  });
+  const selected = candidates[0];
+  if (axis === "x") {
+    return {
+      left: selected.left,
+      right: selected.right,
+      score: selected.score,
+      method: selected.method,
+    };
+  }
+  return {
+    top: selected.top,
+    bottom: selected.bottom,
+    score: selected.score,
+    method: selected.method,
   };
 }
 
@@ -2928,6 +3034,90 @@ function isUsableAutoSliceRect(rect, width, height, centerX, centerY) {
   return rect.width >= minStretchWidth && rect.height >= minStretchHeight;
 }
 
+function detectAutoSliceRepeatedCenter(width, height, getPixel) {
+  const safeWidth = Math.max(1, Math.round(toNumber(width)));
+  const safeHeight = Math.max(1, Math.round(toNumber(height)));
+  const centerX = Math.floor(safeWidth / 2);
+  const centerY = Math.floor(safeHeight / 2);
+  const x = expandSimilarAxisRun({
+    size: safeWidth,
+    crossSize: safeHeight,
+    center: centerX,
+    compareAt: (a, b, index) => getPixel(a, index),
+    compareAgainst: (a, b, index) => getPixel(b, index),
+  });
+  const y = expandSimilarAxisRun({
+    size: safeHeight,
+    crossSize: safeWidth,
+    center: centerY,
+    compareAt: (a, b, index) => getPixel(index, a),
+    compareAgainst: (a, b, index) => getPixel(index, b),
+  });
+
+  return {
+    x: x && isUsableRepeatedAxisRun(x.left, x.right, safeWidth) ? x : null,
+    y: y && isUsableRepeatedAxisRun(y.top, y.bottom, safeHeight) ? y : null,
+  };
+}
+
+function expandSimilarAxisRun(options) {
+  const size = options.size;
+  const crossSize = options.crossSize;
+  const center = clampNumber(options.center, 0, Math.max(0, size - 1));
+  let left = center;
+  let right = center + 1;
+
+  while (left > 0 && areAdjacentSlicesSimilar(left - 1, left, crossSize, options)) {
+    left -= 1;
+  }
+  while (right < size && areAdjacentSlicesSimilar(right - 1, right, crossSize, options)) {
+    right += 1;
+  }
+
+  return {
+    left,
+    right,
+    top: left,
+    bottom: right,
+    width: right - left,
+    height: right - left,
+    score: right - left,
+    method: "repeat",
+  };
+}
+
+function areAdjacentSlicesSimilar(a, b, crossSize, options) {
+  const step = Math.max(1, Math.floor(crossSize / 96));
+  let total = 0;
+  let maxDelta = 0;
+  let count = 0;
+
+  for (let index = 0; index < crossSize; index += step) {
+    const first = options.compareAt(a, b, index);
+    const second = options.compareAgainst(a, b, index);
+    const alphaWeight = ((first[3] || 0) + (second[3] || 0)) > 0 ? 1 : 0.25;
+    const delta = (
+      Math.abs((first[0] || 0) - (second[0] || 0))
+      + Math.abs((first[1] || 0) - (second[1] || 0))
+      + Math.abs((first[2] || 0) - (second[2] || 0))
+      + Math.abs((first[3] || 0) - (second[3] || 0))
+    ) * alphaWeight;
+    total += delta;
+    maxDelta = Math.max(maxDelta, delta);
+    count += 1;
+  }
+
+  const average = count ? total / count : 999;
+  return average <= 8 && maxDelta <= 64;
+}
+
+function isUsableRepeatedAxisRun(start, end, size) {
+  const length = end - start;
+  return start > 0
+    && end < size
+    && length >= Math.max(2, Math.round(size * 0.12));
+}
+
 function buildCompactMirroredRgbaBuffer(source, sourceWidth, sourceHeight, mirroring) {
   const axis = mirroring && mirroring.axis === "y" ? "y" : "x";
   const retained = normalizeMirrorRetained(axis, mirroring && mirroring.retained);
@@ -2948,7 +3138,21 @@ function buildCompactMirroredRgbaBuffer(source, sourceWidth, sourceHeight, mirro
   return output;
 }
 
-function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, sourceSize, centerSource) {
+function getSlicedOutputSize(sourceWidth, sourceHeight, border) {
+  const left = Math.max(0, Math.round(toNumber(border && border.left)));
+  const right = Math.max(0, Math.round(toNumber(border && border.right)));
+  const top = Math.max(0, Math.round(toNumber(border && border.top)));
+  const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
+  return {
+    width: left > 0 || right > 0 ? Math.max(1, left + 1 + right) : Math.max(1, Math.round(toNumber(sourceWidth))),
+    height: top > 0 || bottom > 0 ? Math.max(1, top + 1 + bottom) : Math.max(1, Math.round(toNumber(sourceHeight))),
+  };
+}
+
+function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, sourceSize) {
+  if (startBorder <= 0 && endBorder <= 0) {
+    return clampNumber(value, 0, Math.max(0, sourceSize - 1));
+  }
   if (value < startBorder) {
     return clampNumber(value, 0, Math.max(0, sourceSize - 1));
   }
@@ -2956,6 +3160,7 @@ function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, so
     const fromEnd = outputSize - value;
     return clampNumber(sourceSize - fromEnd, 0, Math.max(0, sourceSize - 1));
   }
+  const centerSource = clampNumber(startBorder + Math.floor(Math.max(1, sourceSize - startBorder - endBorder) / 2), 0, Math.max(0, sourceSize - 1));
   return centerSource;
 }
 
@@ -3795,30 +4000,29 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
         border,
       };
     }
-    const stretchWidth = Math.max(1, sourceWidth - border.left - border.right);
-    const stretchHeight = Math.max(1, sourceHeight - border.top - border.bottom);
-    if (stretchWidth <= 1 && stretchHeight <= 1) {
+    const outputSize = getSlicedOutputSize(sourceWidth, sourceHeight, border);
+    const outputWidth = outputSize.width;
+    const outputHeight = outputSize.height;
+    if (sourceWidth === outputWidth && sourceHeight === outputHeight) {
       return {
         skipped: true,
         reason: "already-minimal",
         sourceWidth,
         sourceHeight,
-        outputWidth: sourceWidth,
-        outputHeight: sourceHeight,
+        outputWidth,
+        outputHeight,
         border,
         autoDetected: resolvedSlicing.autoDetected || null,
       };
     }
 
-    const outputWidth = Math.max(1, border.left + 1 + border.right);
-    const outputHeight = Math.max(1, border.top + 1 + border.bottom);
     const canvas = document.createElement("canvas");
     canvas.width = outputWidth;
     canvas.height = outputHeight;
     const context = canvas.getContext("2d");
     context.clearRect(0, 0, outputWidth, outputHeight);
 
-    drawNineSliceRegion(context, bitmap, border, sourceWidth, sourceHeight);
+    drawNineSliceRegion(context, bitmap, border, sourceWidth, sourceHeight, outputWidth, outputHeight);
     await writeCanvasPngToFile(canvas, fileEntry);
     return {
       skipped: false,
@@ -4034,38 +4238,32 @@ function updateItemPositionsFromBounds(item, bounds) {
   };
 }
 
-function drawNineSliceRegion(context, image, border, sourceWidth, sourceHeight) {
-  const left = Math.max(0, Math.round(toNumber(border && border.left)));
-  const right = Math.max(0, Math.round(toNumber(border && border.right)));
-  const top = Math.max(0, Math.round(toNumber(border && border.top)));
-  const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
-  const centerSourceWidth = Math.max(1, sourceWidth - left - right);
-  const centerSourceHeight = Math.max(1, sourceHeight - top - bottom);
-  const centerSourceX = left;
-  const centerSourceY = top;
-  const rightSourceX = Math.max(left, sourceWidth - right);
-  const bottomSourceY = Math.max(top, sourceHeight - bottom);
-  const rightDestX = left + 1;
-  const bottomDestY = top + 1;
+function drawNineSliceRegion(context, image, border, sourceWidth, sourceHeight, outputWidth, outputHeight) {
+  const sourceCanvas = document.createElement("canvas");
+  sourceCanvas.width = sourceWidth;
+  sourceCanvas.height = sourceHeight;
+  const sourceContext = sourceCanvas.getContext("2d");
+  sourceContext.clearRect(0, 0, sourceWidth, sourceHeight);
+  sourceContext.drawImage(image, 0, 0);
+  const sourceData = sourceContext.getImageData(0, 0, sourceWidth, sourceHeight);
+  const outputData = context.createImageData(outputWidth, outputHeight);
+  const sourceBuffer = sourceData.data;
+  const outputBuffer = outputData.data;
 
-  drawImagePart(context, image, 0, 0, left, top, 0, 0, left, top);
-  drawImagePart(context, image, centerSourceX, 0, centerSourceWidth, top, left, 0, 1, top);
-  drawImagePart(context, image, rightSourceX, 0, right, top, rightDestX, 0, right, top);
-
-  drawImagePart(context, image, 0, centerSourceY, left, centerSourceHeight, 0, top, left, 1);
-  drawImagePart(context, image, centerSourceX, centerSourceY, centerSourceWidth, centerSourceHeight, left, top, 1, 1);
-  drawImagePart(context, image, rightSourceX, centerSourceY, right, centerSourceHeight, rightDestX, top, right, 1);
-
-  drawImagePart(context, image, 0, bottomSourceY, left, bottom, 0, bottomDestY, left, bottom);
-  drawImagePart(context, image, centerSourceX, bottomSourceY, centerSourceWidth, bottom, left, bottomDestY, 1, bottom);
-  drawImagePart(context, image, rightSourceX, bottomSourceY, right, bottom, rightDestX, bottomDestY, right, bottom);
-}
-
-function drawImagePart(context, image, sx, sy, sw, sh, dx, dy, dw, dh) {
-  if (!context || !image || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0) {
-    return;
+  for (let y = 0; y < outputHeight; y += 1) {
+    const sourceY = mapSlicedOutputCoordinate(y, border.top, border.bottom, outputHeight, sourceHeight);
+    for (let x = 0; x < outputWidth; x += 1) {
+      const sourceX = mapSlicedOutputCoordinate(x, border.left, border.right, outputWidth, sourceWidth);
+      const sourceIndex = (sourceY * sourceWidth + sourceX) * 4;
+      const outputIndex = (y * outputWidth + x) * 4;
+      outputBuffer[outputIndex] = sourceBuffer[sourceIndex];
+      outputBuffer[outputIndex + 1] = sourceBuffer[sourceIndex + 1];
+      outputBuffer[outputIndex + 2] = sourceBuffer[sourceIndex + 2];
+      outputBuffer[outputIndex + 3] = sourceBuffer[sourceIndex + 3];
+    }
   }
-  context.drawImage(image, sx, sy, sw, sh, dx, dy, dw, dh);
+
+  context.putImageData(outputData, 0, 0);
 }
 
 async function writeCanvasPngToFile(canvas, fileEntry) {
@@ -6706,8 +6904,11 @@ function buildTrimFallbackFromAsset(asset) {
   }
   if (slicing.enabled) {
     const border = slicing.border || { left: 0, right: 0, top: 0, bottom: 0 };
-    const rawWidth = Math.max(1, Math.round(toNumber(border.left)) + 1 + Math.round(toNumber(border.right)));
-    const rawHeight = Math.max(1, Math.round(toNumber(border.top)) + 1 + Math.round(toNumber(border.bottom)));
+    const sourceWidth = asset && asset.bounds ? asset.bounds.width : asset && asset.width;
+    const sourceHeight = asset && asset.bounds ? asset.bounds.height : asset && asset.height;
+    const outputSize = getSlicedOutputSize(sourceWidth, sourceHeight, border);
+    const rawWidth = outputSize.width;
+    const rawHeight = outputSize.height;
     return {
       rawWidth,
       rawHeight,
