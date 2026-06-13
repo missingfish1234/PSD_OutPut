@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.14",
-  build: "v104",
-  stamp: "2026-06-13-05",
+  version: "1.2.15",
+  build: "v105",
+  stamp: "2026-06-13-06",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2653,7 +2653,6 @@ async function trySaveSlicedExportDocumentWithImaging(exportDoc, item, outputFil
     const sourceBuffer = await buildFullRgbaBufferFromImagingResult(sourcePixels, sourceWidth, sourceHeight);
     const resolvedSlicing = resolveAutoSliceMetadataFromRgbaBuffer(slicing, sourceBuffer, sourceWidth, sourceHeight);
     if (slicing.auto && resolvedSlicing.autoDetectionError) {
-      item.slicingExportDisabled = true;
       return {
         applied: false,
         skipped: true,
@@ -2998,9 +2997,9 @@ function evaluateSlicedReconstructionQuality(source, sourceWidth, sourceHeight, 
   let count = 0;
 
   for (let y = 0; y < height; y += sampleStep) {
-    const sourceY = mapSlicedOutputCoordinate(y, border.top, border.bottom, height, height);
+    const sourceY = mapSlicedReconstructionCoordinate(y, border.top, border.bottom, height, height);
     for (let x = 0; x < width; x += sampleStep) {
-      const sourceX = mapSlicedOutputCoordinate(x, border.left, border.right, width, width);
+      const sourceX = mapSlicedReconstructionCoordinate(x, border.left, border.right, width, width);
       const originalIndex = (y * width + x) * 4;
       const rebuiltIndex = (sourceY * width + sourceX) * 4;
       const alphaWeight = ((source[originalIndex + 3] || 0) + (source[rebuiltIndex + 3] || 0)) > 0 ? 1 : 0.25;
@@ -3021,7 +3020,7 @@ function evaluateSlicedReconstructionQuality(source, sourceWidth, sourceHeight, 
 
   const averageDelta = count ? total / count : 999;
   const badRatio = count ? bad / count : 1;
-  const pass = averageDelta <= 4 && badRatio <= 0.002 && maxDelta <= 160;
+  const pass = averageDelta <= 4 && badRatio <= 0.001 && maxDelta <= 64;
   return {
     pass,
     reason: pass ? "" : "reconstruction-error-too-high",
@@ -3139,8 +3138,16 @@ function detectAutoSliceRepeatedCenter(width, height, getPixel) {
   });
 
   return {
-    x: x && isUsableRepeatedAxisRun(x.left, x.right, safeWidth) ? x : null,
-    y: y && isUsableRepeatedAxisRun(y.top, y.bottom, safeHeight) ? y : null,
+    x: x && isUsableRepeatedAxisRun(x.left, x.right, safeWidth) ? {
+      ...x,
+      width: x.right - x.left,
+      height: safeHeight,
+    } : null,
+    y: y && isUsableRepeatedAxisRun(y.top, y.bottom, safeHeight) ? {
+      ...y,
+      width: safeWidth,
+      height: y.bottom - y.top,
+    } : null,
   };
 }
 
@@ -3228,9 +3235,41 @@ function getSlicedOutputSize(sourceWidth, sourceHeight, border) {
   const top = Math.max(0, Math.round(toNumber(border && border.top)));
   const bottom = Math.max(0, Math.round(toNumber(border && border.bottom)));
   return {
-    width: left > 0 || right > 0 ? Math.max(1, left + 1 + right) : Math.max(1, Math.round(toNumber(sourceWidth))),
-    height: top > 0 || bottom > 0 ? Math.max(1, top + 1 + bottom) : Math.max(1, Math.round(toNumber(sourceHeight))),
+    width: left > 0 || right > 0 ? Math.max(1, left + getSlicedRetainedCenterSize(sourceWidth, left, right) + right) : Math.max(1, Math.round(toNumber(sourceWidth))),
+    height: top > 0 || bottom > 0 ? Math.max(1, top + getSlicedRetainedCenterSize(sourceHeight, top, bottom) + bottom) : Math.max(1, Math.round(toNumber(sourceHeight))),
   };
+}
+
+function getSlicedRetainedCenterSize(sourceSize, startBorder, endBorder) {
+  const size = Math.max(1, Math.round(toNumber(sourceSize)));
+  const start = Math.max(0, Math.round(toNumber(startBorder)));
+  const end = Math.max(0, Math.round(toNumber(endBorder)));
+  const stretch = Math.max(1, size - start - end);
+  const desired = clampNumber(Math.round(size * 0.08), 12, 24);
+  return Math.max(1, Math.min(stretch, desired));
+}
+
+function mapSlicedReconstructionCoordinate(value, startBorder, endBorder, targetSize, sourceSize) {
+  if (startBorder <= 0 && endBorder <= 0) {
+    return clampNumber(value, 0, Math.max(0, sourceSize - 1));
+  }
+  if (value < startBorder) {
+    return clampNumber(value, 0, Math.max(0, sourceSize - 1));
+  }
+  if (value >= targetSize - endBorder) {
+    const fromEnd = targetSize - value;
+    return clampNumber(sourceSize - fromEnd, 0, Math.max(0, sourceSize - 1));
+  }
+
+  const targetStretch = Math.max(1, targetSize - startBorder - endBorder);
+  const sourceStretch = Math.max(1, sourceSize - startBorder - endBorder);
+  const retained = getSlicedRetainedCenterSize(sourceSize, startBorder, endBorder);
+  const sourceStart = startBorder + Math.floor(Math.max(0, sourceStretch - retained) / 2);
+  const relative = value - startBorder;
+  const retainedOffset = retained <= 1
+    ? 0
+    : clampNumber(Math.floor(relative * retained / targetStretch), 0, retained - 1);
+  return clampNumber(sourceStart + retainedOffset, 0, Math.max(0, sourceSize - 1));
 }
 
 function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, sourceSize) {
@@ -3244,8 +3283,10 @@ function mapSlicedOutputCoordinate(value, startBorder, endBorder, outputSize, so
     const fromEnd = outputSize - value;
     return clampNumber(sourceSize - fromEnd, 0, Math.max(0, sourceSize - 1));
   }
-  const centerSource = clampNumber(startBorder + Math.floor(Math.max(1, sourceSize - startBorder - endBorder) / 2), 0, Math.max(0, sourceSize - 1));
-  return centerSource;
+  const outputStretch = Math.max(1, outputSize - startBorder - endBorder);
+  const sourceStretch = Math.max(1, sourceSize - startBorder - endBorder);
+  const sourceStart = startBorder + Math.floor(Math.max(0, sourceStretch - outputStretch) / 2);
+  return clampNumber(sourceStart + (value - startBorder), 0, Math.max(0, sourceSize - 1));
 }
 
 function copyRgbaPixel(source, sourceWidth, sourceX, sourceY, target, targetWidth, targetX, targetY) {
@@ -4074,7 +4115,6 @@ async function postprocessSlicedPngOutput(fileEntry, item) {
       ? resolveAutoSliceMetadataFromCanvas(slicing, sourceContext, sourceWidth, sourceHeight)
       : slicing;
     if (slicing.auto && resolvedSlicing.autoDetectionError) {
-      item.slicingExportDisabled = true;
       return null;
     }
     const border = normalizeSliceBorder(resolvedSlicing.border, sourceWidth, sourceHeight);
