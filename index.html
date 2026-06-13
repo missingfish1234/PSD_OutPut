@@ -11,48 +11,48 @@
   <main class="pe-panel">
     <section class="pe-card">
       <h1 class="pe-title">PSD Export Pipeline</h1>
-      <p class="pe-subtext">Export PSD layers to PNG, metadata, Unity, Cocos, and Spine layouts.</p>
-      <p class="pe-build-tag">Build 1.2.15 / v105 / stamp 2026-06-13-06</p>
+      <p class="pe-subtext">將 PSD 圖層輸出為 PNG、metadata、Unity、Cocos 與 Spine 版面資料。</p>
+      <p class="pe-build-tag">Build 1.2.16 / v106 / stamp 2026-06-13-07</p>
     </section>
 
     <section class="pe-card">
       <div class="pe-section-head">
-        <h2>Output Folder</h2>
-        <button id="chooseFolderBtn" class="pe-btn pe-btn-secondary" type="button">Choose Folder</button>
+        <h2>輸出資料夾</h2>
+        <button id="chooseFolderBtn" class="pe-btn pe-btn-secondary" type="button">選擇資料夾</button>
       </div>
-      <p id="folderState" class="pe-hint">No output folder selected.</p>
-      <p id="folderPath" class="pe-path">Select a folder before exporting.</p>
+      <p id="folderState" class="pe-hint">尚未選擇輸出資料夾。</p>
+      <p id="folderPath" class="pe-path">請先選擇資料夾再開始匯出。</p>
     </section>
 
     <section id="settingsCard" class="pe-card">
-      <h2>Settings</h2>
+      <h2>輸出設定</h2>
       <div class="pe-setting-grid"></div>
     </section>
 
     <section class="pe-card">
       <div class="pe-section-head">
-        <h2>PSD Scan</h2>
+        <h2>PSD 掃描</h2>
         <div class="pe-actions">
-          <button id="refreshBtn" class="pe-btn pe-btn-secondary" type="button">Refresh PSD</button>
-          <button id="exportBtn" class="pe-btn pe-btn-primary" type="button">Start Export</button>
+          <button id="refreshBtn" class="pe-btn pe-btn-secondary" type="button">重新掃描 PSD</button>
+          <button id="exportBtn" class="pe-btn pe-btn-primary" type="button">開始匯出</button>
         </div>
       </div>
       <div class="pe-stats">
-        <div class="pe-stat"><span>Document</span><strong id="docName">No PSD</strong></div>
-        <div class="pe-stat"><span>Size</span><strong id="docSize">-</strong></div>
-        <div class="pe-stat"><span>Assets</span><strong id="assetCount">0</strong></div>
-        <div class="pe-stat"><span>Name Preview</span><strong id="namePreview">-</strong></div>
+        <div class="pe-stat"><span>文件</span><strong id="docName">尚未讀取 PSD</strong></div>
+        <div class="pe-stat"><span>尺寸</span><strong id="docSize">-</strong></div>
+        <div class="pe-stat"><span>圖片數</span><strong id="assetCount">0</strong></div>
+        <div class="pe-stat"><span>檔名預覽</span><strong id="namePreview">-</strong></div>
       </div>
     </section>
 
     <section class="pe-card">
-      <h2>Output Preview</h2>
+      <h2>輸出預覽</h2>
       <div id="previewList" class="pe-preview-list"></div>
     </section>
 
     <section class="pe-card">
-      <h2>Status</h2>
-      <pre id="statusBox" class="pe-status">Panel loading...</pre>
+      <h2>狀態</h2>
+      <pre id="statusBox" class="pe-status">面板載入中...</pre>
     </section>
   </main>
 </body>
