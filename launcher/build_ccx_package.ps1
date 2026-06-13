@@ -150,6 +150,14 @@ pause
 "@
   Set-Content -LiteralPath $cmdPath -Value $cmdText -Encoding ASCII
 
+  if (Test-Path -LiteralPath $syncScript) {
+    Write-Host "Syncing local Photoshop UXP cache:"
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $syncScript -CcxPath $ccxPath
+    if ($LASTEXITCODE -ne 0) {
+      throw "UXP cache sync failed with exit code $LASTEXITCODE"
+    }
+  }
+
   Write-Host "CCX package build succeeded:"
   Write-Host "  $ccxPath"
   Write-Host "Installer helper:"
