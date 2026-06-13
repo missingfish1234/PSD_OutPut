@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.12",
-  build: "v102",
-  stamp: "2026-06-13-03",
+  version: "1.2.13",
+  build: "v103",
+  stamp: "2026-06-13-04",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -2827,7 +2827,7 @@ function resolveAutoSliceMetadataFromRgbaBuffer(slicing, source, sourceWidth, so
       source[index + 3] || 0,
     ];
   });
-  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight);
+  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight, source);
 }
 
 function resolveAutoSliceMetadataFromCanvas(slicing, context, sourceWidth, sourceHeight) {
@@ -2849,11 +2849,11 @@ function resolveAutoSliceMetadataFromCanvas(slicing, context, sourceWidth, sourc
       imageData[index + 3] || 0,
     ];
   });
-  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight);
+  return buildAutoSliceResolvedMetadata(slicing, detected, repeated, sourceWidth, sourceHeight, imageData);
 }
 
-function buildAutoSliceResolvedMetadata(slicing, transparentDetected, repeatedDetected, sourceWidth, sourceHeight) {
-  const resolved = resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight);
+function buildAutoSliceResolvedMetadata(slicing, transparentDetected, repeatedDetected, sourceWidth, sourceHeight, sourceBuffer) {
+  const resolved = resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight, sourceBuffer);
   if (!resolved) {
     return {
       ...slicing,
@@ -2886,16 +2886,17 @@ function buildAutoSliceResolvedMetadata(slicing, transparentDetected, repeatedDe
       } : null,
       repeatX: repeatedDetected && repeatedDetected.x ? repeatedDetected.x : null,
       repeatY: repeatedDetected && repeatedDetected.y ? repeatedDetected.y : null,
+      quality: resolved.quality || null,
+      candidates: resolved.candidates || [],
       score: resolved.score,
     },
     border,
   };
 }
 
-function resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight) {
+function resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceWidth, sourceHeight, sourceBuffer) {
   const width = Math.max(1, Math.round(toNumber(sourceWidth)));
   const height = Math.max(1, Math.round(toNumber(sourceHeight)));
-  const aspect = width / Math.max(1, height);
   const transparentX = transparentDetected ? {
     left: transparentDetected.left,
     right: transparentDetected.right,
@@ -2912,40 +2913,123 @@ function resolveAutoSliceAxisPlan(transparentDetected, repeatedDetected, sourceW
   const repeatY = repeatedDetected && repeatedDetected.y ? repeatedDetected.y : null;
   const x = chooseAutoSliceAxisCandidate(transparentX, repeatX, "x");
   const y = chooseAutoSliceAxisCandidate(transparentY, repeatY, "y");
-  const wide = aspect >= 1.2;
-  const tall = aspect <= 0.85;
-  let useX = false;
-  let useY = false;
-
-  if (wide) {
-    useX = Boolean(x);
-    useY = false;
-  } else if (tall) {
-    useX = false;
-    useY = Boolean(y);
-  } else {
-    useX = Boolean(x);
-    useY = Boolean(y);
+  const candidates = [];
+  if (x) {
+    candidates.push(buildAutoSliceAxisCandidate("x", x, null, width, height, sourceBuffer));
+  }
+  if (y) {
+    candidates.push(buildAutoSliceAxisCandidate("y", null, y, width, height, sourceBuffer));
+  }
+  if (x && y) {
+    candidates.push(buildAutoSliceAxisCandidate("xy", x, y, width, height, sourceBuffer));
   }
 
-  if (!useX && !useY) {
-    if (x && (!y || x.score >= y.score)) {
-      useX = true;
-    } else if (y) {
-      useY = true;
-    }
-  }
-
-  if (!useX && !useY) {
+  const validCandidates = candidates.filter((candidate) => candidate && candidate.quality && candidate.quality.pass);
+  if (!validCandidates.length) {
     return null;
   }
 
+  validCandidates.sort((a, b) => {
+    if (a.area !== b.area) return a.area - b.area;
+    return a.quality.averageDelta - b.quality.averageDelta;
+  });
+  const selected = validCandidates[0];
   return {
-    method: [useX ? (x.method === "transparent" ? "transparent-center-x" : "repeated-center-x") : "", useY ? (y.method === "transparent" ? "transparent-center-y" : "repeated-center-y") : ""].filter(Boolean).join("+"),
-    axes: `${useX ? "x" : ""}${useY ? "y" : ""}`,
-    x: useX ? x : null,
-    y: useY ? y : null,
-    score: roundNumber((useX && x ? x.score : 0) + (useY && y ? y.score : 0)),
+    method: selected.method,
+    axes: selected.axes,
+    x: selected.x,
+    y: selected.y,
+    quality: selected.quality,
+    candidates: candidates.map((candidate) => ({
+      axes: candidate.axes,
+      border: candidate.border,
+      outputSize: candidate.outputSize,
+      quality: candidate.quality,
+    })),
+    score: roundNumber((selected.x ? selected.x.score : 0) + (selected.y ? selected.y.score : 0)),
+  };
+}
+
+function buildAutoSliceAxisCandidate(axes, x, y, width, height, sourceBuffer) {
+  const border = normalizeSliceBorder({
+    left: x ? x.left : 0,
+    right: x ? width - x.right : 0,
+    top: y ? y.top : 0,
+    bottom: y ? height - y.bottom : 0,
+  }, width, height);
+  const outputSize = getSlicedOutputSize(width, height, border);
+  const quality = evaluateSlicedReconstructionQuality(sourceBuffer, width, height, border);
+  return {
+    axes,
+    x,
+    y,
+    border,
+    outputSize,
+    area: outputSize.width * outputSize.height,
+    method: [x ? (x.method === "transparent" ? "transparent-center-x" : "repeated-center-x") : "", y ? (y.method === "transparent" ? "transparent-center-y" : "repeated-center-y") : ""].filter(Boolean).join("+"),
+    quality,
+  };
+}
+
+function evaluateSlicedReconstructionQuality(source, sourceWidth, sourceHeight, border) {
+  if (!source) {
+    return {
+      pass: false,
+      reason: "missing-source-buffer",
+    };
+  }
+
+  const width = Math.max(1, Math.round(toNumber(sourceWidth)));
+  const height = Math.max(1, Math.round(toNumber(sourceHeight)));
+  const outputSize = getSlicedOutputSize(width, height, border);
+  if (outputSize.width >= width && outputSize.height >= height) {
+    return {
+      pass: false,
+      reason: "no-size-reduction",
+      outputSize,
+    };
+  }
+
+  const maxSamples = 180000;
+  const sampleStep = Math.max(1, Math.ceil(Math.sqrt((width * height) / maxSamples)));
+  let total = 0;
+  let maxDelta = 0;
+  let bad = 0;
+  let count = 0;
+
+  for (let y = 0; y < height; y += sampleStep) {
+    const sourceY = mapSlicedOutputCoordinate(y, border.top, border.bottom, height, height);
+    for (let x = 0; x < width; x += sampleStep) {
+      const sourceX = mapSlicedOutputCoordinate(x, border.left, border.right, width, width);
+      const originalIndex = (y * width + x) * 4;
+      const rebuiltIndex = (sourceY * width + sourceX) * 4;
+      const alphaWeight = ((source[originalIndex + 3] || 0) + (source[rebuiltIndex + 3] || 0)) > 0 ? 1 : 0.25;
+      const delta = (
+        Math.abs((source[originalIndex] || 0) - (source[rebuiltIndex] || 0))
+        + Math.abs((source[originalIndex + 1] || 0) - (source[rebuiltIndex + 1] || 0))
+        + Math.abs((source[originalIndex + 2] || 0) - (source[rebuiltIndex + 2] || 0))
+        + Math.abs((source[originalIndex + 3] || 0) - (source[rebuiltIndex + 3] || 0))
+      ) * alphaWeight;
+      total += delta;
+      maxDelta = Math.max(maxDelta, delta);
+      if (delta > 96) {
+        bad += 1;
+      }
+      count += 1;
+    }
+  }
+
+  const averageDelta = count ? total / count : 999;
+  const badRatio = count ? bad / count : 1;
+  const pass = averageDelta <= 4 && badRatio <= 0.002 && maxDelta <= 160;
+  return {
+    pass,
+    reason: pass ? "" : "reconstruction-error-too-high",
+    averageDelta: roundNumber(averageDelta),
+    maxDelta: roundNumber(maxDelta),
+    badRatio: roundNumber(badRatio),
+    sampleStep,
+    outputSize,
   };
 }
 
