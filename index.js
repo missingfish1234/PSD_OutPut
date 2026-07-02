@@ -5,9 +5,9 @@ const fs = storage.localFileSystem;
 const STORAGE_KEY = "psd-export-pipeline-settings";
 const FOLDER_TOKEN_KEY = "psd-export-pipeline-folder-token";
 const RELEASE_INFO = {
-  version: "1.2.17",
-  build: "v107",
-  stamp: "2026-06-13-08",
+  version: "1.2.18",
+  build: "v108",
+  stamp: "2026-07-02-01",
 };
 const PNG_SAVE_COMPRESSION = 2;
 const ENABLE_PNG_LOSSLESS_SLIMMING = false;
@@ -3015,7 +3015,7 @@ function evaluateSlicedReconstructionQuality(source, sourceWidth, sourceHeight, 
 
   const averageDelta = count ? total / count : 999;
   const badRatio = count ? bad / count : 1;
-  const pass = averageDelta <= 4 && badRatio <= 0.001 && maxDelta <= 160;
+  const pass = averageDelta <= 4 && badRatio <= 0.0015 && maxDelta <= 192;
   return {
     pass,
     reason: pass ? "" : "reconstruction-error-too-high",
@@ -3176,6 +3176,7 @@ function areAdjacentSlicesSimilar(a, b, crossSize, options) {
   const step = Math.max(1, Math.floor(crossSize / 96));
   let total = 0;
   let maxDelta = 0;
+  let bad = 0;
   let count = 0;
 
   for (let index = 0; index < crossSize; index += step) {
@@ -3190,11 +3191,15 @@ function areAdjacentSlicesSimilar(a, b, crossSize, options) {
     ) * alphaWeight;
     total += delta;
     maxDelta = Math.max(maxDelta, delta);
+    if (delta > 96) {
+      bad += 1;
+    }
     count += 1;
   }
 
   const average = count ? total / count : 999;
-  return average <= 8 && maxDelta <= 64;
+  const badRatio = count ? bad / count : 1;
+  return average <= 8 && badRatio <= 0.02 && maxDelta <= 192;
 }
 
 function isUsableRepeatedAxisRun(start, end, size) {
